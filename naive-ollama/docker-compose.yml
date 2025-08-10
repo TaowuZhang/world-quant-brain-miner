@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  naive-ollma:
+    build: .
+    container_name: naive-ollma
+    ports:
+      - "11434:11434"  # Ollama API port
+    volumes:
+      - ./credential.txt:/app/credential.txt:ro  # Mount credentials
+      - ./results:/app/results  # Mount results directory
+      - ./logs:/app/logs  # Mount logs directory
+      - ollama_data:/root/.ollama  # Persist Ollama models
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_ORIGINS=*
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    command: ["--batch-size", "5", "--sleep-time", "30", "--log-level", "INFO"]
+    networks:
+      - naive-ollma-network
+
+  # Optional: Add a simple web interface for monitoring
+  ollama-webui:
+    image: ghcr.io/ollama-webui/ollama-webui:main
+    container_name: ollama-webui
+    ports:
+      - "3000:8080"
+    environment:
+      - OLLAMA_API_BASE_URL=http://naive-ollma:11434/api
+    depends_on:
+      - naive-ollma
+    restart: unless-stopped
+    networks:
+      - naive-ollma-network
+
+volumes:
+  ollama_data:
+    driver: local
+
+networks:
+  naive-ollma-network:
+    driver: bridge
