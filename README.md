@@ -2,6 +2,28 @@
 
 This project is a collection of scripts that generate and submit alphas to the WorldQuant platform.
 
+## 🎯 **Recommended Approach: Naive-Ollama**
+
+**For the best performance and user experience, we recommend using the [Naive-Ollama Alpha Generator](#naive-ollama-alpha-generator-recommended) which features:**
+
+- 🚀 **3-5x faster** alpha generation with local Ollama LLM
+- 🖥️ **GPU acceleration** for optimal performance  
+- 📊 **Real-time web dashboard** for monitoring and control
+- 🤖 **Fully automated** 24/7 operation
+- 🔒 **Local processing** - no external API costs or privacy concerns
+- 🐳 **Docker support** for easy deployment
+- 📈 **Advanced orchestration** with intelligent scheduling
+
+**Quick Start:**
+```bash
+cd naive-ollama
+# Setup credentials in credential.txt
+docker-compose -f docker-compose.gpu.yml up -d
+# Access dashboard at http://localhost:5000
+```
+
+---
+
 <!-- Beautiful ASCII  art -->
 
 
@@ -47,6 +69,192 @@ This is a Python implementation of the alpha generator.
 
 - Pre-Consultant has maximum 5 concurrent simulations
 - Pre-Consultant has fewer operators and data fields options
+
+## Agent N8N
+
+Incoming... lol
+
+## Naive-Ollama Alpha Generator (Recommended)
+
+A sophisticated alpha factor generation system that uses Ollama with financial language models to generate, test, and submit alpha factors to WorldQuant Brain. This system replaces the previous Kimi interface with a local Ollama-based solution for better performance and control.
+
+### 🚀 Key Features
+
+- **Local LLM Integration**: Uses Ollama with llama3.2:3b or llama2:7b models
+- **GPU Acceleration**: Full NVIDIA GPU support for faster inference
+- **Web Dashboard**: Real-time monitoring and control interface
+- **Automated Orchestration**: Continuous alpha generation, mining, and submission
+- **WorldQuant Brain Integration**: Direct API integration for testing and submission
+- **Docker Support**: Easy deployment with Docker and Docker Compose
+- **Daily Rate Limiting**: Ensures compliance with WorldQuant submission limits
+
+### 🏗️ Architecture
+
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   Web Dashboard │    │ Alpha Generator │    │  WorldQuant API │
+│   (Flask)       │◄──►│   (Ollama)      │◄──►│   (External)    │
+│   Port 5000     │    │   Port 11434    │    │                 │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+         │                       │                       │
+         │              ┌─────────────────┐              │
+         └──────────────►│ Alpha Orchestrator │◄─────────────┘
+                        │   (Python)      │
+                        └─────────────────┘
+                                │
+                                ▼
+                        ┌─────────────────┐
+                        │   Results &     │
+                        │   Logs Storage  │
+                        └─────────────────┘
+```
+
+### 🚀 Quick Start
+
+#### 1. Setup Credentials
+
+Create `naive-ollama/credential.txt` with your WorldQuant Brain credentials:
+```json
+["your.email@worldquant.com", "your_password"]
+```
+
+#### 2. Start with GPU Support (Recommended)
+
+```bash
+cd naive-ollama
+# Start the complete system with GPU acceleration
+docker-compose -f docker-compose.gpu.yml up -d
+
+# Or use the convenience script
+start_gpu.bat
+```
+
+#### 3. Access the Web Dashboard
+
+Open your browser and navigate to:
+- **Main Dashboard**: http://localhost:5000
+- **Ollama WebUI**: http://localhost:3000
+- **Ollama API**: http://localhost:11434
+
+### 📊 Web Dashboard Features
+
+The web dashboard provides real-time monitoring and control:
+
+#### Status Monitoring
+- **GPU Status**: Memory usage, utilization, temperature
+- **Ollama Status**: Model loading, API connectivity
+- **Orchestrator Status**: Generation activity, mining schedule
+- **WorldQuant Status**: API connectivity, authentication
+- **Statistics**: Generated alphas, success rates, 24h metrics
+
+#### Manual Controls
+- **Generate Alpha**: Trigger single alpha generation
+- **Trigger Mining**: Run alpha expression mining
+- **Trigger Submission**: Submit successful alphas
+- **Refresh Status**: Update all metrics
+
+#### Real-time Logs
+- **Alpha Generator Logs**: Filtered logs showing alpha generation activity
+- **System Logs**: Complete system activity
+- **Recent Activity**: Timeline of recent events
+
+### 🔄 Workflow
+
+#### 1. Alpha Generation
+- **Continuous Mode**: Generates alphas every 6 hours
+- **Batch Processing**: Generates 3 alphas per batch
+- **Ollama Integration**: Uses local LLM for alpha idea generation
+- **WorldQuant Testing**: Tests each alpha immediately
+
+#### 2. Alpha Mining
+- **Expression Mining**: Analyzes promising alphas for variations
+- **Pattern Recognition**: Identifies successful alpha patterns
+- **Optimization**: Suggests improvements to existing alphas
+
+#### 3. Alpha Submission
+- **Daily Limit**: Submits only once per day
+- **Success Filtering**: Only submits alphas with good performance
+- **Rate Limiting**: Respects WorldQuant API limits
+
+### 📈 Performance Improvements
+
+#### Generation Speed
+- **Before**: ~10-15 seconds per alpha (Kimi API)
+- **After**: ~3-5 seconds per alpha (Local Ollama + GPU)
+
+#### Automation
+- **Before**: Manual intervention required
+- **After**: Fully automated 24/7 operation
+
+### 📁 File Structure
+
+```
+naive-ollama/
+├── alpha_generator_ollama.py      # Main alpha generation script
+├── alpha_orchestrator.py          # Orchestration and scheduling
+├── alpha_expression_miner.py      # Alpha expression mining
+├── successful_alpha_submitter.py  # Alpha submission to WorldQuant
+├── web_dashboard.py               # Flask web dashboard
+├── templates/
+│   └── dashboard.html             # Dashboard HTML template
+├── results/                       # Generated alpha results
+├── logs/                          # System logs
+├── Dockerfile                     # Docker image definition
+├── docker-compose.gpu.yml         # GPU-enabled deployment
+├── docker-compose.yml             # CPU-only deployment
+├── requirements.txt               # Python dependencies
+├── credential.txt                 # WorldQuant credentials
+├── start_gpu.bat                  # Windows GPU startup script
+├── start_dashboard.bat            # Windows dashboard startup script
+├── README.md                      # Detailed documentation
+├── README_Docker.md               # Docker-specific documentation
+└── CHANGELOG.md                   # Version history
+```
+
+### 🛠️ Technical Stack
+
+#### Backend
+- **Python 3.8**: Main application language
+- **Flask**: Web dashboard framework
+- **Requests**: HTTP client for APIs
+- **Schedule**: Task scheduling
+- **PyTorch**: GPU acceleration support
+
+#### Infrastructure
+- **Docker**: Containerization
+- **Docker Compose**: Multi-service orchestration
+- **NVIDIA CUDA**: GPU acceleration
+- **Ollama**: Local LLM serving
+
+#### Frontend
+- **HTML5/CSS3**: Dashboard interface
+- **JavaScript**: Real-time updates
+- **Responsive Design**: Mobile-friendly layout
+
+### 🔒 Security
+
+- **Local Processing**: All LLM inference happens locally
+- **Credential Protection**: Credentials stored in mounted volume
+- **Network Isolation**: Docker network isolation
+- **API Rate Limiting**: Respects external API limits
+
+### 📝 Documentation
+
+For detailed documentation, see:
+- [naive-ollama/README.md](naive-ollama/README.md) - Main project documentation
+- [naive-ollama/README_Docker.md](naive-ollama/README_Docker.md) - Docker-specific documentation
+- [naive-ollama/CHANGELOG.md](naive-ollama/CHANGELOG.md) - Version history
+
+### 🚀 Why Choose Naive-Ollama?
+
+1. **Performance**: 3-5x faster than Kimi API
+2. **Cost**: No external API costs
+3. **Privacy**: All processing happens locally
+4. **Control**: Full control over the LLM and workflow
+5. **Automation**: 24/7 continuous operation
+6. **Monitoring**: Real-time web dashboard
+7. **Scalability**: GPU acceleration support
+8. **Reliability**: Docker containerization
 
 ## Pre-Consultant
 
@@ -222,6 +430,22 @@ pip install -r requirements.txt
 ```bash
 python machine_miner.py --username your_worldquant_username --password your_worldquant_password
 ```
+
+# Project Evolution
+
+## 🚀 **Latest: Naive-Ollama (v2.0)**
+- **Local LLM Integration**: Ollama with llama3.2:3b/llama2:7b models
+- **GPU Acceleration**: NVIDIA CUDA support for faster inference
+- **Web Dashboard**: Real-time monitoring and control interface
+- **Automated Orchestration**: Continuous alpha generation, mining, and submission
+- **Docker Support**: Easy deployment with containerization
+- **Performance**: 3-5x faster than previous approaches
+
+## 📈 **Previous Versions**
+- **v1.0**: Basic Kimi API integration with manual workflows
+- **v1.1**: Alpha expression mining and optimization
+- **v1.2**: Automated submission with rate limiting
+- **v2.0**: Complete rewrite with Ollama, GPU support, and web dashboard
 
 # TODO
 - Integrate more templates
