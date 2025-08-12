@@ -44,6 +44,54 @@ class AlphaExpressionMiner:
             raise Exception(f"Authentication failed: {response.text}")
         logger.info("Authentication successful")
 
+    def remove_alpha_from_hopeful(self, expression: str, hopeful_file: str = "hopeful_alphas.json") -> bool:
+        """Remove a mined alpha from hopeful_alphas.json."""
+        try:
+            if not os.path.exists(hopeful_file):
+                logger.warning(f"Hopeful alphas file {hopeful_file} not found")
+                return False
+            
+            # Create backup before modifying
+            backup_file = f"{hopeful_file}.backup.{int(time.time())}"
+            import shutil
+            shutil.copy2(hopeful_file, backup_file)
+            logger.debug(f"Created backup: {backup_file}")
+            
+            with open(hopeful_file, 'r') as f:
+                hopeful_alphas = json.load(f)
+            
+            # Find and remove the alpha with matching expression
+            original_count = len(hopeful_alphas)
+            removed_alphas = []
+            remaining_alphas = []
+            
+            for alpha in hopeful_alphas:
+                if alpha.get('expression') == expression:
+                    removed_alphas.append(alpha)
+                else:
+                    remaining_alphas.append(alpha)
+            
+            removed_count = len(removed_alphas)
+            
+            if removed_count > 0:
+                # Save the updated file
+                with open(hopeful_file, 'w') as f:
+                    json.dump(remaining_alphas, f, indent=2)
+                logger.info(f"Removed {removed_count} alpha(s) with expression '{expression}' from {hopeful_file}")
+                logger.debug(f"Remaining alphas in file: {len(remaining_alphas)}")
+                return True
+            else:
+                logger.info(f"No matching alpha found in {hopeful_file} for expression: {expression}")
+                logger.debug(f"Available expressions: {[alpha.get('expression', 'N/A') for alpha in hopeful_alphas[:5]]}")
+                return False
+                
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in {hopeful_file}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Error removing alpha from {hopeful_file}: {e}")
+            return False
+
     def parse_expression(self, expression: str) -> List[Dict]:
         """Parse the alpha expression to find numeric parameters and their positions."""
         logger.info(f"Parsing expression: {expression}")
@@ -98,37 +146,57 @@ class AlphaExpressionMiner:
         selected_params = [parameters[i] for i in selected_indices]
         return selected_params
 
-    def get_parameter_ranges(self, parameters: List[Dict]) -> List[Dict]:
+    def get_parameter_ranges(self, parameters: List[Dict], auto_mode: bool = False) -> List[Dict]:
         """Get range and step size for each selected parameter."""
         for param in parameters:
-            while True:
-                try:
-                    print(f"\nParameter: {param['value']} | Context: ...{param['context']}...")
-                    range_input = input("Enter range (e.g., '10' for ±10, or '5,15' for 5 to 15): ")
-                    if ',' in range_input:
-                        min_val, max_val = map(float, range_input.split(','))
-                    else:
-                        range_val = float(range_input)
-                        min_val = param['value'] - range_val
-                        max_val = param['value'] + range_val
+            if auto_mode:
+                # Use default ranges for automated mode
+                original_value = param['value']
+                if param['is_integer']:
+                    # For integers, use ±20% range with step of 1
+                    range_val = max(1, abs(original_value) * 0.2)
+                    min_val = max(1, original_value - range_val)
+                    max_val = original_value + range_val
+                    step = 1
+                else:
+                    # For floats, use ±10% range with step of 10% of the range
+                    range_val = abs(original_value) * 0.1
+                    min_val = original_value - range_val
+                    max_val = original_value + range_val
+                    step = range_val / 5  # 5 steps across the range
+                
+                logger.info(f"Auto mode: Parameter {param['value']} -> range [{min_val:.2f}, {max_val:.2f}], step {step:.2f}")
+            else:
+                # Interactive mode - get user input
+                while True:
+                    try:
+                        print(f"\nParameter: {param['value']} | Context: ...{param['context']}...")
+                        range_input = input("Enter range (e.g., '10' for ±10, or '5,15' for 5 to 15): ")
+                        if ',' in range_input:
+                            min_val, max_val = map(float, range_input.split(','))
+                        else:
+                            range_val = float(range_input)
+                            min_val = param['value'] - range_val
+                            max_val = param['value'] + range_val
 
-                    step = float(input("Enter step size: "))
-                    if step <= 0:
-                        raise ValueError("Step size must be positive")
-                    if min_val >= max_val:
-                        raise ValueError("Min value must be less than max value")
+                        step = float(input("Enter step size: "))
+                        if step <= 0:
+                            raise ValueError("Step size must be positive")
+                        if min_val >= max_val:
+                            raise ValueError("Min value must be less than max value")
 
-                    # If the original value was an integer, ensure step is also an integer
-                    if param['is_integer'] and not step.is_integer():
-                        print("Warning: Original value is integer, rounding step to nearest integer")
-                        step = round(step)
+                        # If the original value was an integer, ensure step is also an integer
+                        if param['is_integer'] and not step.is_integer():
+                            print("Warning: Original value is integer, rounding step to nearest integer")
+                            step = round(step)
 
-                    param['min'] = min_val
-                    param['max'] = max_val
-                    param['step'] = step
-                    break
-                except ValueError as e:
-                    print(f"Invalid input: {e}. Please try again.")
+                        break
+                    except ValueError as e:
+                        print(f"Invalid input: {e}. Please try again.")
+
+            param['min'] = min_val
+            param['max'] = max_val
+            param['step'] = step
 
         return parameters
 
@@ -296,10 +364,17 @@ def main():
     
     if not selected_params:
         logger.info("No parameters selected for variation")
+        # Still remove the alpha from hopeful_alphas.json even if no parameters found
+        logger.info("Mining completed (no parameters to vary), removing alpha from hopeful_alphas.json")
+        removed = miner.remove_alpha_from_hopeful(args.expression)
+        if removed:
+            logger.info(f"Successfully removed alpha '{args.expression}' from hopeful_alphas.json")
+        else:
+            logger.warning(f"Could not remove alpha '{args.expression}' from hopeful_alphas.json (may not exist)")
         return
     
     # Get ranges and steps for selected parameters
-    selected_params = miner.get_parameter_ranges(selected_params)
+    selected_params = miner.get_parameter_ranges(selected_params, auto_mode=args.auto_mode)
     
     # Generate variations
     variations = miner.generate_variations(args.expression, selected_params)
@@ -325,6 +400,15 @@ def main():
     logger.info(f"Saving {len(results)} results to {output_file}")
     with open(output_file, 'w') as f:
         json.dump(results, f, indent=2)
+    
+    # Always remove the mined alpha from hopeful_alphas.json after completion
+    # This prevents the same alpha from being processed again
+    logger.info("Mining completed, removing alpha from hopeful_alphas.json")
+    removed = miner.remove_alpha_from_hopeful(args.expression)
+    if removed:
+        logger.info(f"Successfully removed alpha '{args.expression}' from hopeful_alphas.json")
+    else:
+        logger.warning(f"Could not remove alpha '{args.expression}' from hopeful_alphas.json (may not exist)")
     
     logger.info("Mining complete")
 

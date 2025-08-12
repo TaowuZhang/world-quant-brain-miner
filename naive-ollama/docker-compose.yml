@@ -10,6 +10,7 @@ services:
       - ./credential.txt:/app/credential.txt:ro  # Mount credentials
       - ./results:/app/results  # Mount results directory
       - ./logs:/app/logs  # Mount logs directory
+      - .:/app  # Mount current directory for hopeful_alphas.json sharing
       - ollama_data:/root/.ollama  # Persist Ollama models
     environment:
       - OLLAMA_HOST=0.0.0.0
@@ -25,7 +26,7 @@ services:
               count: all
               capabilities: [gpu]
     restart: unless-stopped
-    command: ["--batch-size", "5", "--sleep-time", "30", "--log-level", "INFO"]
+    command: ["--batch-size", "3", "--sleep-time", "30", "--max-concurrent", "3", "--log-level", "INFO"]
     networks:
       - naive-ollma-network
 

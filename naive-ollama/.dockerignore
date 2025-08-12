@@ -28,7 +28,6 @@ coverage.xml
 results/
 logs/
 *.log
-hopeful_alphas.json
 
 # Credentials (will be mounted)
 credential.txt

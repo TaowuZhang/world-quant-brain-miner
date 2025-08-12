@@ -53,7 +53,7 @@ class RetryQueue:
             time.sleep(1)  # Prevent busy waiting
 
 class AlphaGenerator:
-    def __init__(self, credentials_path: str, ollama_url: str = "http://localhost:11434"):
+    def __init__(self, credentials_path: str, ollama_url: str = "http://localhost:11434", max_concurrent: int = 2):
         self.sess = requests.Session()
         self.credentials_path = credentials_path  # Store path for reauth
         self.setup_auth(credentials_path)
@@ -61,7 +61,10 @@ class AlphaGenerator:
         self.results = []
         self.pending_results = {}
         self.retry_queue = RetryQueue(self)
-        self.executor = ThreadPoolExecutor(max_workers=4)  # For concurrent simulations
+        # Reduce concurrent workers to prevent VRAM issues
+        self.executor = ThreadPoolExecutor(max_workers=max_concurrent)  # For concurrent simulations
+        self.vram_cleanup_interval = 10  # Cleanup every 10 operations
+        self.operation_count = 0
         
     def setup_auth(self, credentials_path: str) -> None:
         """Set up authentication with WorldQuant Brain."""
@@ -79,6 +82,17 @@ class AlphaGenerator:
         
         if response.status_code != 201:
             raise Exception(f"Authentication failed: {response.text}")
+    
+    def cleanup_vram(self):
+        """Perform VRAM cleanup by forcing garbage collection and waiting."""
+        try:
+            import gc
+            gc.collect()
+            logging.info("Performed VRAM cleanup")
+            # Add a small delay to allow GPU memory to be freed
+            time.sleep(2)
+        except Exception as e:
+            logging.warning(f"VRAM cleanup failed: {e}")
         
     def get_data_fields(self) -> List[Dict]:
         """Fetch available data fields from WorldQuant Brain across multiple datasets with random sampling."""
@@ -265,16 +279,14 @@ market_ret = ts_product(1+group_mean(returns,1,market),250)-1;rfr = vec_avg(fnd6
 """
 
             # Prepare Ollama API request
-            model_name = getattr(self, 'model_name', 'llama2:7b')
+            model_name = getattr(self, 'model_name', 'phi3:mini')
             ollama_data = {
                 'model': model_name,
                 'prompt': prompt,
                 'stream': False,
-                'options': {
-                    'temperature': 0.3,
-                    'top_p': 0.9,
-                    'max_tokens': 1000
-                }
+                'temperature': 0.3,
+                'top_p': 0.9,
+                'num_predict': 1000  # Use num_predict instead of max_tokens for Ollama
             }
 
             print("Sending request to Ollama API...")
@@ -332,47 +344,59 @@ market_ret = ts_product(1+group_mean(returns,1,market),250)-1;rfr = vec_avg(fnd6
             return []
 
     def test_alpha_batch(self, alphas: List[str]) -> None:
-        """Submit a batch of alphas for testing with monitoring."""
+        """Submit a batch of alphas for testing with monitoring, respecting concurrent limits."""
         logging.info(f"Starting batch test of {len(alphas)} alphas")
         for alpha in alphas:
             logging.info(f"Alpha expression: {alpha}")
         
-        # Submit all alphas
-        futures = []
-        for i, alpha in enumerate(alphas, 1):
-            logging.info(f"Submitting alpha {i}/{len(alphas)}")
-            future = self.executor.submit(self._test_alpha_impl, alpha)
-            futures.append((alpha, future))
-        
-        # Process results and set up monitoring
+        # Submit alphas in smaller chunks to respect concurrent limits
+        max_concurrent = self.executor._max_workers
         submitted = 0
         queued = 0
-        for alpha, future in futures:
-            try:
-                result = future.result()
-                if result.get("status") == "error":
-                    if "SIMULATION_LIMIT_EXCEEDED" in result.get("message", ""):
-                        self.retry_queue.add(alpha)
-                        queued += 1
-                        logging.info(f"Queued for retry: {alpha}")
-                    else:
-                        logging.error(f"Simulation error for {alpha}: {result.get('message')}")
-                    continue
-                    
-                sim_id = result.get("result", {}).get("id")
-                progress_url = result.get("result", {}).get("progress_url")
-                if sim_id and progress_url:
-                    self.pending_results[sim_id] = {
-                        "alpha": alpha,
-                        "progress_url": progress_url,
-                        "status": "pending",
-                        "attempts": 0
-                    }
-                    submitted += 1
-                    logging.info(f"Successfully submitted {alpha} (ID: {sim_id})")
-                    
-            except Exception as e:
-                logging.error(f"Error submitting alpha {alpha}: {str(e)}")
+        
+        for i in range(0, len(alphas), max_concurrent):
+            chunk = alphas[i:i + max_concurrent]
+            logging.info(f"Submitting chunk {i//max_concurrent + 1}/{(len(alphas)-1)//max_concurrent + 1} ({len(chunk)} alphas)")
+            
+            # Submit chunk
+            futures = []
+            for j, alpha in enumerate(chunk, 1):
+                logging.info(f"Submitting alpha {i+j}/{len(alphas)}")
+                future = self.executor.submit(self._test_alpha_impl, alpha)
+                futures.append((alpha, future))
+            
+            # Process results for this chunk
+            for alpha, future in futures:
+                try:
+                    result = future.result()
+                    if result.get("status") == "error":
+                        if "SIMULATION_LIMIT_EXCEEDED" in result.get("message", ""):
+                            self.retry_queue.add(alpha)
+                            queued += 1
+                            logging.info(f"Queued for retry: {alpha}")
+                        else:
+                            logging.error(f"Simulation error for {alpha}: {result.get('message')}")
+                        continue
+                        
+                    sim_id = result.get("result", {}).get("id")
+                    progress_url = result.get("result", {}).get("progress_url")
+                    if sim_id and progress_url:
+                        self.pending_results[sim_id] = {
+                            "alpha": alpha,
+                            "progress_url": progress_url,
+                            "status": "pending",
+                            "attempts": 0
+                        }
+                        submitted += 1
+                        logging.info(f"Successfully submitted {alpha} (ID: {sim_id})")
+                        
+                except Exception as e:
+                    logging.error(f"Error submitting alpha {alpha}: {str(e)}")
+            
+            # Wait between chunks to avoid overwhelming the API
+            if i + max_concurrent < len(alphas):
+                logging.info(f"Waiting 10 seconds before next chunk...")
+                sleep(10)
         
         logging.info(f"Batch submission complete: {submitted} submitted, {queued} queued for retry")
         
@@ -426,7 +450,7 @@ market_ret = ts_product(1+group_mean(returns,1,market),250)-1;rfr = vec_avg(fnd6
                             alpha_resp = self.sess.get(f'https://api.worldquantbrain.com/alphas/{alpha_id}')
                             if alpha_resp.status_code == 200:
                                 alpha_data = alpha_resp.json()
-                                fitness = alpha_data.get("is", {}).get("fitness", 0)
+                                fitness = alpha_data.get("is", {}).get("fitness")
                                 logging.info(f"Alpha {alpha_id} completed with fitness: {fitness}")
                                 
                                 self.results.append({
@@ -435,10 +459,13 @@ market_ret = ts_product(1+group_mean(returns,1,market),250)-1;rfr = vec_avg(fnd6
                                     "alpha_data": alpha_data
                                 })
                                 
-                                if fitness > 0.5:
+                                # Check if fitness is not None and greater than threshold
+                                if fitness is not None and fitness > 0.5:
                                     logging.info(f"Found promising alpha! Fitness: {fitness}")
                                     self.log_hopeful_alpha(info["alpha"], alpha_data)
                                     successful += 1
+                                elif fitness is None:
+                                    logging.warning(f"Alpha {alpha_id} has no fitness data, skipping hopeful alpha logging")
                     elif status == "ERROR":
                         logging.error(f"Simulation failed for alpha: {info['alpha']}")
                     completed.append(sim_id)
@@ -535,13 +562,13 @@ market_ret = ts_product(1+group_mean(returns,1,market),250)-1;rfr = vec_avg(fnd6
         entry = {
             "expression": expression,  # Store just the expression string
             "timestamp": int(time.time()),
-            "alpha_id": alpha_data["id"],
-            "fitness": alpha_data["is"]["fitness"],
-            "sharpe": alpha_data["is"]["sharpe"],
-            "turnover": alpha_data["is"]["turnover"],
-            "returns": alpha_data["is"]["returns"],
-            "grade": alpha_data["grade"],
-            "checks": alpha_data["is"]["checks"]
+            "alpha_id": alpha_data.get("id", "unknown"),
+            "fitness": alpha_data.get("is", {}).get("fitness"),
+            "sharpe": alpha_data.get("is", {}).get("sharpe"),
+            "turnover": alpha_data.get("is", {}).get("turnover"),
+            "returns": alpha_data.get("is", {}).get("returns"),
+            "grade": alpha_data.get("grade", "UNKNOWN"),
+            "checks": alpha_data.get("is", {}).get("checks", [])
         }
         
         existing_data.append(entry)
@@ -682,8 +709,8 @@ def main():
                       help='Path to credentials file (default: ./credential.txt)')
     parser.add_argument('--output-dir', type=str, default='./results',
                       help='Directory to save results (default: ./results)')
-    parser.add_argument('--batch-size', type=int, default=5,
-                      help='Number of alpha factors to generate per batch (default: 5)')
+    parser.add_argument('--batch-size', type=int, default=3,
+                      help='Number of alpha factors to generate per batch (default: 3)')
     parser.add_argument('--sleep-time', type=int, default=10,
                       help='Sleep time between batches in seconds (default: 10)')
     parser.add_argument('--log-level', type=str, default='INFO',
@@ -691,8 +718,10 @@ def main():
                       help='Set the logging level (default: INFO)')
     parser.add_argument('--ollama-url', type=str, default='http://localhost:11434',
                       help='Ollama API URL (default: http://localhost:11434)')
-    parser.add_argument('--ollama-model', type=str, default='llama2:7b',
-                      help='Ollama model to use (default: llama2:7b)')
+    parser.add_argument('--ollama-model', type=str, default='phi3:mini',
+                                             help='Ollama model to use (default: llama3.2:3b)')
+    parser.add_argument('--max-concurrent', type=int, default=2,
+                      help='Maximum concurrent simulations (default: 2)')
     
     args = parser.parse_args()
     
@@ -711,7 +740,7 @@ def main():
     
     try:
         # Initialize alpha generator with Ollama
-        generator = AlphaGenerator(args.credentials, args.ollama_url)
+        generator = AlphaGenerator(args.credentials, args.ollama_url, args.max_concurrent)
         generator.model_name = args.ollama_model  # Set the model name
         
         # Get data fields and operators once
@@ -735,6 +764,11 @@ def main():
                 alpha_ideas = generator.generate_alpha_ideas_with_ollama(data_fields, operators)
                 batch_successful = generator.test_alpha_batch(alpha_ideas)
                 total_successful += batch_successful
+                
+                # Perform VRAM cleanup every few batches
+                generator.operation_count += 1
+                if generator.operation_count % generator.vram_cleanup_interval == 0:
+                    generator.cleanup_vram()
                 
                 # Save batch results
                 results = generator.get_results()
