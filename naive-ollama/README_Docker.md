@@ -76,11 +76,13 @@ For GPU acceleration:
 
 The system now includes an integrated orchestrator that manages:
 
+- **Concurrent Execution**: Alpha generator and expression miner run simultaneously for maximum efficiency
 - **Continuous Alpha Generation**: Uses Ollama with llama3.2:3b for generating alpha ideas
 - **Expression Mining**: Automatically mines promising alphas every 6 hours to find parameter variations
 - **Daily Submission**: Submits successful alphas once per day (2 PM) to avoid rate limits
 - **GPU Acceleration**: Full GPU support for faster model inference
 - **Automated Workflow**: No manual intervention required
+- **Concurrent Simulation Control**: Configurable limit (default: 3) for concurrent simulations to respect API limits
 
 ### Operation Modes
 
@@ -143,10 +145,30 @@ You can modify the `docker-compose.yml` to adjust:
 
 The application accepts these arguments (modify in docker-compose.yml):
 
-- `--batch-size`: Number of alphas per batch (default: 5)
+- `--batch-size`: Number of alphas per batch (default: 3)
 - `--sleep-time`: Sleep between batches in seconds (default: 30)
+- `--max-concurrent`: Maximum concurrent simulations (default: 3)
 - `--log-level`: Logging level (default: INFO)
 - `--ollama-url`: Ollama API URL (default: http://localhost:11434)
+- `--mode`: Operation mode (continuous, daily, generator, miner, submitter)
+- `--mining-interval`: Hours between mining runs (default: 6)
+
+## Concurrent Execution Workflow
+
+The Docker setup now runs the alpha generator and expression miner concurrently:
+
+1. **Alpha Generator**: Continuously generates new alpha expressions using Ollama
+2. **Expression Miner**: Monitors for promising alphas and mines variations
+3. **Coordination**: Both components respect the `--max-concurrent` limit (default: 3)
+4. **File Sharing**: Uses `hopeful_alphas.json` as the coordination mechanism
+5. **Process Management**: Orchestrator manages both processes and restarts if needed
+
+### Benefits of Concurrent Execution
+
+- **Increased Throughput**: Generator and miner work simultaneously
+- **Better Resource Utilization**: No idle time waiting for sequential completion
+- **Faster Alpha Discovery**: Mining starts as soon as promising alphas are found
+- **Resilient Operation**: Automatic restart of failed components
 
 ## Usage
 

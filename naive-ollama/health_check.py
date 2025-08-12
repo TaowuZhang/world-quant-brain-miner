@@ -121,10 +121,8 @@ def test_ollama_generation():
             'model': 'fingpt',
             'prompt': test_prompt,
             'stream': False,
-            'options': {
-                'temperature': 0.1,
-                'max_tokens': 100
-            }
+            'temperature': 0.1,
+            'num_predict': 100  # Use num_predict instead of max_tokens for Ollama
         }
         
         response = requests.post(
