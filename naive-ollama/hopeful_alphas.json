@@ -1,7 +1,7 @@
 [
   {
     "expression": "rank(divide(revenue, assets))",
-    "timestamp": 1755013232,
+    "timestamp": 1755099440,
     "alpha_id": "bgJe2jr",
     "fitness": 0.52,
     "sharpe": 0.74,

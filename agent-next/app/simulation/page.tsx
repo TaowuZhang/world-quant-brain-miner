@@ -616,6 +616,9 @@ export default function SimulationPage() {
   }
 
   return (
+    // Dark mode
+    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-gray-900 text-white">
+
     <div className="container mx-auto py-4 space-y-4">
       <div className="flex flex-col space-y-1">
         <h1 className="text-2xl font-bold">Simulation Management</h1>
@@ -1081,6 +1084,7 @@ export default function SimulationPage() {
           )}
         </DialogContent>
       </Dialog>
+    </div>
     </div>
   );
 }

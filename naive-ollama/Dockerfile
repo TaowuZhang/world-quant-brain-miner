@@ -33,12 +33,13 @@ RUN curl -fsSL https://ollama.ai/install.sh | sh
 # Copy application code
 COPY . .
 
-# Copy the start script and make it executable
+# Copy the start scripts and make them executable
 COPY start.sh /app/start.sh
-RUN chmod +x /app/start.sh
+COPY start_ollama.sh /app/start_ollama.sh
+RUN chmod +x /app/start.sh /app/start_ollama.sh
 
 # Expose Ollama port
 EXPOSE 11434
 
-# Set the entrypoint
+# Set the entrypoint (will be overridden by docker-compose)
 ENTRYPOINT ["/app/start.sh"]

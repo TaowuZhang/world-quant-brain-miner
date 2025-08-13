@@ -1,0 +1,7 @@
+pinecone>=3.0.0
+sentence-transformers>=2.2.0
+pandas>=1.5.0
+numpy>=1.21.0
+torch>=1.12.0
+transformers>=4.20.0
+python-dotenv>=1.0.0
