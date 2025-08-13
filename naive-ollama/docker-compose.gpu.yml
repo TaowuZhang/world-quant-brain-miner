@@ -53,6 +53,38 @@ services:
     networks:
       - naive-ollma-network
       
+  # Machine Miner Service
+  machine-miner:
+    build: .
+    container_name: machine-miner-gpu
+    runtime: nvidia
+    volumes:
+      - ./credential.txt:/app/credential.txt:ro
+      - ./results:/app/results
+      - ./logs:/app/logs
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - CUDA_VISIBLE_DEVICES=0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+        limits:
+          memory: 8G
+          cpus: '2.0'
+    restart: unless-stopped
+    command: ["python", "machine_miner.py", "--credentials", "/app/credential.txt", "--region", "USA", "--universe", "TOP3000"]
+    depends_on:
+      - naive-ollma
+    networks:
+      - naive-ollma-network
+
   # Alpha Generator Dashboard
   alpha-dashboard:
     build: .

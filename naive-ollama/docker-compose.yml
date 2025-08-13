@@ -1,9 +1,10 @@
 version: '3.8'
 
 services:
-  naive-ollma:
+  # Ollama service for AI model serving
+  ollama:
     build: .
-    container_name: naive-ollma
+    container_name: naive-ollama
     ports:
       - "11434:11434"  # Ollama API port
     volumes:
@@ -26,9 +27,90 @@ services:
               count: all
               capabilities: [gpu]
     restart: unless-stopped
-    command: ["--batch-size", "3", "--sleep-time", "30", "--max-concurrent", "3", "--log-level", "INFO"]
+    command: ["/app/start_ollama.sh"]
     networks:
-      - naive-ollma-network
+      - naive-ollama-network
+
+  # Machine Miner Service
+  machine-miner:
+    build: .
+    container_name: machine-miner
+    volumes:
+      - ./credential.txt:/app/credential.txt:ro
+      - ./results:/app/results
+      - ./logs:/app/logs
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    command: ["python", "machine_miner.py", "--credentials", "/app/credential.txt", "--region", "USA", "--universe", "TOP3000"]
+    depends_on:
+      - ollama
+    networks:
+      - naive-ollama-network
+
+  # Alpha Generator Service
+  alpha-generator:
+    build: .
+    container_name: alpha-generator
+    volumes:
+      - ./credential.txt:/app/credential.txt:ro
+      - ./results:/app/results
+      - ./logs:/app/logs
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    command: ["python", "alpha_generator_ollama.py", "--ollama-url", "http://ollama:11434", "--mode", "continuous", "--mining-interval", "6", "--batch-size", "3", "--max-concurrent", "3"]
+    depends_on:
+      - ollama
+    networks:
+      - naive-ollama-network
+
+  # Alpha Expression Miner Service
+  alpha-expression-miner:
+    build: .
+    container_name: alpha-expression-miner
+    volumes:
+      - ./credential.txt:/app/credential.txt:ro
+      - ./results:/app/results
+      - ./logs:/app/logs
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    command: ["python", "alpha_expression_miner_continuous.py", "--ollama-url", "http://ollama:11434", "--mining-interval", "6"]
+    depends_on:
+      - ollama
+    networks:
+      - naive-ollama-network
 
   # Optional: Add a simple web interface for monitoring
   ollama-webui:
@@ -37,17 +119,17 @@ services:
     ports:
       - "3000:8080"
     environment:
-      - OLLAMA_API_BASE_URL=http://naive-ollma:11434/api
+      - OLLAMA_API_BASE_URL=http://ollama:11434/api
     depends_on:
-      - naive-ollma
+      - ollama
     restart: unless-stopped
     networks:
-      - naive-ollma-network
+      - naive-ollama-network
 
 volumes:
   ollama_data:
     driver: local
 
 networks:
-  naive-ollma-network:
+  naive-ollama-network:
     driver: bridge

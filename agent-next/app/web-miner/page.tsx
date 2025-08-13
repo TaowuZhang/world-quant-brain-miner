@@ -11,6 +11,7 @@ import { sharedNavItems } from '../../components/ui/shared-navigation';
 import { useRouter } from 'next/navigation';
 import { Button } from '../../components/ui/button';
 import { Check, X } from 'lucide-react';
+import { toast } from 'sonner';
 
 interface Field {
   id: string;
@@ -185,6 +186,18 @@ export default function WebMinerPage() {
     setOffset(newPage);
   };
 
+  const handleUseDiscoveredFields = (discoveredFields: any[]) => {
+    // Convert discovered fields to the format expected by the data field selector
+    const convertedFields = discoveredFields.map(field => ({
+      id: field.id,
+      description: field.description,
+      type: field.category
+    }));
+    
+    setSelectedFields(convertedFields);
+    toast.success(`Switched to ${convertedFields.length} discovered data fields`);
+  };
+
   // Show loading state while checking authentication
   if (!isAuthenticated) {
     return (
@@ -248,7 +261,7 @@ export default function WebMinerPage() {
                   variant="outline" 
                   size="sm" 
                   onClick={handleSelectAllFields}
-                  className="flex items-center"
+                  className="flex items-center text-black"
                 >
                   <Check className="h-4 w-4 mr-1" />
                   Select All
@@ -257,7 +270,7 @@ export default function WebMinerPage() {
                   variant="outline" 
                   size="sm" 
                   onClick={handleDeselectAllFields}
-                  className="flex items-center"
+                  className="flex items-center text-black"
                 >
                   <X className="h-4 w-4 mr-1" />
                   Deselect All
@@ -279,7 +292,7 @@ export default function WebMinerPage() {
                   variant="outline" 
                   size="sm" 
                   onClick={handleSelectAllOperators}
-                  className="flex items-center"
+                  className="flex items-center text-black"
                 >
                   <Check className="h-4 w-4 mr-1" />
                   Select All
@@ -288,7 +301,7 @@ export default function WebMinerPage() {
                   variant="outline" 
                   size="sm" 
                   onClick={handleDeselectAllOperators}
-                  className="flex items-center"
+                  className="flex items-center text-black"
                 >
                   <X className="h-4 w-4 mr-1" />
                   Deselect All
@@ -307,6 +320,7 @@ export default function WebMinerPage() {
               selectedFields={selectedFields}
               selectedOperators={selectedOperators}
               pdfFile={uploadedFile}
+              onUseDiscoveredFields={handleUseDiscoveredFields}
             />
           </div>
         </div>

@@ -1,6 +1,6 @@
 {
   "current_model_index": 2,
-  "vram_error_count": 1,
+  "vram_error_count": 2,
   "current_model": "tinyllama:1.1b",
-  "timestamp": 1755024014.0844457
+  "timestamp": 1755100067.3889418
 }
