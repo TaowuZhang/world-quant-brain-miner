@@ -402,7 +402,16 @@ market_ret = ts_product(1+group_mean(returns,1,market),250)-1;rfr = vec_avg(fnd6
         
         # Monitor progress until all complete or need retry
         total_successful = 0
+        max_monitoring_time = 3600  # 1 hour maximum monitoring time
+        start_time = time.time()
+        
         while self.pending_results:
+            # Check for timeout
+            if time.time() - start_time > max_monitoring_time:
+                logging.warning(f"Monitoring timeout reached ({max_monitoring_time}s), stopping monitoring")
+                logging.warning(f"Remaining pending simulations: {list(self.pending_results.keys())}")
+                break
+                
             logging.info(f"Monitoring {len(self.pending_results)} pending simulations...")
             completed = self.check_pending_results()
             total_successful += completed
@@ -419,6 +428,13 @@ market_ret = ts_product(1+group_mean(returns,1,market),250)-1;rfr = vec_avg(fnd6
         
         for sim_id, info in self.pending_results.items():
             if info["status"] == "pending":
+                # Check if simulation has been pending too long (30 minutes)
+                if "start_time" not in info:
+                    info["start_time"] = time.time()
+                elif time.time() - info["start_time"] > 1800:  # 30 minutes
+                    logging.warning(f"Simulation {sim_id} has been pending for too long, marking as failed")
+                    completed.append(sim_id)
+                    continue
                 try:
                     sim_progress_resp = self.sess.get(info["progress_url"])
                     logging.info(f"Checking simulation {sim_id} for alpha: {info['alpha'][:50]}...")
@@ -437,12 +453,26 @@ market_ret = ts_product(1+group_mean(returns,1,market),250)-1;rfr = vec_avg(fnd6
                     # Handle retry-after
                     retry_after = sim_progress_resp.headers.get("Retry-After")
                     if retry_after:
-                        logging.info(f"Need to wait {retry_after}s before next check")
+                        try:
+                            wait_time = int(float(retry_after))  # Handle decimal values like "2.5"
+                            logging.info(f"Need to wait {wait_time}s before next check")
+                            time.sleep(wait_time)
+                        except (ValueError, TypeError):
+                            logging.warning(f"Invalid Retry-After header: {retry_after}, using default 5s")
+                            time.sleep(5)
                         continue
                     
                     sim_result = sim_progress_resp.json()
                     status = sim_result.get("status")
                     logging.info(f"Simulation {sim_id} status: {status}")
+                    
+                    # Log additional details for debugging
+                    if status == "PENDING":
+                        logging.debug(f"Simulation {sim_id} still pending...")
+                    elif status == "RUNNING":
+                        logging.debug(f"Simulation {sim_id} is running...")
+                    elif status not in ["COMPLETE", "ERROR"]:
+                        logging.warning(f"Simulation {sim_id} has unknown status: {status}")
                     
                     if status == "COMPLETE":
                         alpha_id = sim_result.get("alpha")
@@ -536,7 +566,7 @@ market_ret = ts_product(1+group_mean(returns,1,market),250)-1;rfr = vec_avg(fnd6
             return {
                 "status": "success", 
                 "result": {
-                    "id": str(time.time()),
+                    "id": f"{time.time()}_{random.random()}",
                     "progress_url": sim_progress_url
                 }
             }
@@ -718,8 +748,8 @@ def main():
                       help='Set the logging level (default: INFO)')
     parser.add_argument('--ollama-url', type=str, default='http://localhost:11434',
                       help='Ollama API URL (default: http://localhost:11434)')
-    parser.add_argument('--ollama-model', type=str, default='phi3:mini',
-                                             help='Ollama model to use (default: llama3.2:3b)')
+    parser.add_argument('--ollama-model', type=str, default='llama3.2:8b',
+                                             help='Ollama model to use (default: llama3.2:8b for RTX A4000)')
     parser.add_argument('--max-concurrent', type=int, default=2,
                       help='Maximum concurrent simulations (default: 2)')
     
