@@ -41,7 +41,7 @@ docker-compose -f docker-compose.gpu.yml up -d
 Discord: https://discord.gg/3B2TmHQw
 
 Usage Tutorial(WIP) on the web version: https://www.youtube.com/watch?v=xwr9atsulSA
-
+Further usage tutorial on the local ollama version: https://www.youtube.com/watch?v=EAeujBRrKiI
 
 
 
