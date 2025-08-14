@@ -44,11 +44,13 @@ class ModelFleetManager:
         self.max_vram_errors = 3  # Number of VRAM errors before downgrading
         
         # Model fleet ordered by priority (largest to smallest)
+        # Optimized for RTX A4000 (16GB VRAM)
         self.model_fleet = [
-            ModelInfo("llama3.2:3b", 2048, 1, "Large model - 3B parameters"),
-            ModelInfo("phi3:mini", 2200, 2, "Medium model - Phi3 mini"),
-            ModelInfo("tinyllama:1.1b", 637, 3, "Small model - 1.1B parameters"),
-            ModelInfo("qwen2.5:0.5b", 397, 4, "Tiny model - 0.5B parameters"),
+            ModelInfo("llama3.2:8b", 8192, 1, "Large model - 8B parameters (RTX A4000 optimized)"),
+            ModelInfo("llama3.2:3b", 2048, 2, "Medium model - 3B parameters"),
+            ModelInfo("phi3:mini", 2200, 3, "Small model - Phi3 mini"),
+            ModelInfo("tinyllama:1.1b", 637, 4, "Tiny model - 1.1B parameters"),
+            ModelInfo("qwen2.5:0.5b", 397, 5, "Micro model - 0.5B parameters"),
         ]
         
         # State file to persist current model selection
@@ -210,11 +212,11 @@ class ModelFleetManager:
             
             # Replace the default model
             content = content.replace(
-                "default='llama3.2:3b'",
+                    "default='llama3.2:8b'",
                 f"default='{model_name}'"
             )
             content = content.replace(
-                "getattr(self, 'model_name', 'llama3.2:3b')",
+                "getattr(self, 'model_name', 'llama3.2:8b')",
                 f"getattr(self, 'model_name', '{model_name}')"
             )
             
@@ -273,6 +275,11 @@ class AlphaOrchestrator:
         self.model_fleet_manager = ModelFleetManager(ollama_url)
         self.vram_monitoring_active = False
         self.vram_monitor_thread = None
+        
+        # Restart mechanism
+        self.restart_interval = 1800  # 30 minutes in seconds
+        self.last_restart_time = time.time()
+        self.restart_thread = None
         
     def setup_auth(self, credentials_path: str) -> None:
         """Set up authentication with WorldQuant Brain."""
@@ -400,6 +407,34 @@ class AlphaOrchestrator:
             
         except Exception as e:
             logger.error(f"Error restarting alpha generator: {e}")
+    
+    def start_restart_monitoring(self):
+        """Start restart monitoring in a separate thread."""
+        if not self.restart_thread or not self.restart_thread.is_alive():
+            self.restart_thread = threading.Thread(target=self._restart_monitor_loop, daemon=True)
+            self.restart_thread.start()
+            logger.info("🔄 Restart monitoring started (30-minute intervals)")
+    
+    def _restart_monitor_loop(self):
+        """Monitor and restart processes every 30 minutes."""
+        while self.running:
+            try:
+                current_time = time.time()
+                time_since_last_restart = current_time - self.last_restart_time
+                
+                if time_since_last_restart >= self.restart_interval:
+                    logger.info(f"⏰ 30 minutes elapsed since last restart, initiating restart...")
+                    self.restart_all_processes()
+                else:
+                    remaining_time = self.restart_interval - time_since_last_restart
+                    logger.debug(f"⏰ Next restart in {remaining_time/60:.1f} minutes")
+                
+                # Check every minute
+                time.sleep(60)
+                
+            except Exception as e:
+                logger.error(f"Error in restart monitoring: {e}")
+                time.sleep(60)
 
     def get_model_fleet_status(self) -> Dict:
         """Get the current status of the model fleet."""
@@ -593,10 +628,40 @@ class AlphaOrchestrator:
                 logger.error(f"Error in continuous miner: {e}")
                 time.sleep(check_interval)
 
+    def restart_all_processes(self):
+        """Restart all running processes to prevent stuck jobs."""
+        logger.info("🔄 Restarting all processes to prevent stuck jobs...")
+        
+        # Stop current processes
+        self.stop_processes()
+        
+        # Wait a moment for processes to terminate
+        time.sleep(5)
+        
+        # Restart processes
+        try:
+            # Restart alpha generator
+            logger.info("🔄 Restarting alpha generator...")
+            self.start_alpha_generator_continuous(batch_size=3, sleep_time=30)
+            
+            # Restart VRAM monitoring
+            logger.info("🔄 Restarting VRAM monitoring...")
+            self.start_vram_monitoring()
+            
+            logger.info("✅ All processes restarted successfully")
+            self.last_restart_time = time.time()
+            
+        except Exception as e:
+            logger.error(f"❌ Error during restart: {e}")
+    
     def stop_processes(self):
         """Stop all running processes."""
         logger.info("Stopping all processes...")
         self.running = False
+        
+        # Stop restart thread
+        if self.restart_thread and self.restart_thread.is_alive():
+            logger.info("Stopping restart monitoring thread...")
         
         # Stop VRAM monitoring
         self.stop_vram_monitoring()
@@ -646,6 +711,10 @@ class AlphaOrchestrator:
             logger.info("Starting VRAM monitoring...")
             self.start_vram_monitoring()
             
+            # Start restart monitoring
+            logger.info("Starting restart monitoring...")
+            self.start_restart_monitoring()
+            
             # Start alpha generator in continuous mode
             self.start_alpha_generator_continuous(batch_size=3, sleep_time=30)
             
@@ -692,7 +761,7 @@ def main():
                       help='Path to credentials file (default: ./credential.txt)')
     parser.add_argument('--ollama-url', type=str, default='http://localhost:11434',
                       help='Ollama API URL (default: http://localhost:11434)')
-    parser.add_argument('--mode', type=str, choices=['daily', 'continuous', 'miner', 'submitter', 'generator', 'fleet-status', 'fleet-reset', 'fleet-downgrade', 'fleet-reset-app'],
+    parser.add_argument('--mode', type=str, choices=['daily', 'continuous', 'miner', 'submitter', 'generator', 'fleet-status', 'fleet-reset', 'fleet-downgrade', 'fleet-reset-app', 'restart'],
                       default='continuous', help='Operation mode (default: continuous)')
     parser.add_argument('--mining-interval', type=int, default=6,
                       help='Mining interval in hours for continuous mode (default: 6)')
@@ -700,12 +769,15 @@ def main():
                       help='Batch size for operations (default: 3)')
     parser.add_argument('--max-concurrent', type=int, default=3,
                       help='Maximum concurrent simulations (default: 3)')
+    parser.add_argument('--restart-interval', type=int, default=30,
+                      help='Restart interval in minutes (default: 30)')
     
     args = parser.parse_args()
     
     try:
         orchestrator = AlphaOrchestrator(args.credentials, args.ollama_url)
         orchestrator.max_concurrent_simulations = args.max_concurrent
+        orchestrator.restart_interval = args.restart_interval * 60  # Convert minutes to seconds
         
         if args.mode == 'daily':
             orchestrator.daily_workflow()
@@ -729,6 +801,9 @@ def main():
         elif args.mode == 'fleet-reset-app':
             orchestrator.force_application_reset()
             print("Application reset completed - returned to largest model")
+        elif args.mode == 'restart':
+            orchestrator.restart_all_processes()
+            print("Manual restart completed")
             
     except Exception as e:
         logger.error(f"Fatal error: {e}")
