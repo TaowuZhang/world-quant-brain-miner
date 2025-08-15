@@ -44,13 +44,13 @@ class ModelFleetManager:
         self.max_vram_errors = 3  # Number of VRAM errors before downgrading
         
         # Model fleet ordered by priority (largest to smallest)
-        # Optimized for RTX A4000 (16GB VRAM)
+        # Optimized for RTX A4000 (16GB VRAM) with DeepSeek-R1 reasoning models
         self.model_fleet = [
-            ModelInfo("llama3.2:8b", 8192, 1, "Large model - 8B parameters (RTX A4000 optimized)"),
-            ModelInfo("llama3.2:3b", 2048, 2, "Medium model - 3B parameters"),
-            ModelInfo("phi3:mini", 2200, 3, "Small model - Phi3 mini"),
-            ModelInfo("tinyllama:1.1b", 637, 4, "Tiny model - 1.1B parameters"),
-            ModelInfo("qwen2.5:0.5b", 397, 5, "Micro model - 0.5B parameters"),
+            ModelInfo("deepseek-r1:8b", 5200, 1, "DeepSeek-R1 8B - Reasoning model (RTX A4000 optimized)"),
+            ModelInfo("deepseek-r1:7b", 4700, 2, "DeepSeek-R1 7B - Reasoning model"),
+            ModelInfo("deepseek-r1:1.5b", 1100, 3, "DeepSeek-R1 1.5B - Reasoning model"),
+            ModelInfo("llama3:3b", 2048, 4, "Llama 3.2 3B - Fallback model"),
+            ModelInfo("phi3:mini", 2200, 5, "Phi3 mini - Emergency fallback"),
         ]
         
         # State file to persist current model selection
@@ -771,6 +771,8 @@ def main():
                       help='Maximum concurrent simulations (default: 3)')
     parser.add_argument('--restart-interval', type=int, default=30,
                       help='Restart interval in minutes (default: 30)')
+    parser.add_argument('--ollama-model', type=str, default='deepseek-r1:8b',
+                      help='Ollama model to use (default: deepseek-r1:8b)')
     
     args = parser.parse_args()
     
@@ -778,6 +780,16 @@ def main():
         orchestrator = AlphaOrchestrator(args.credentials, args.ollama_url)
         orchestrator.max_concurrent_simulations = args.max_concurrent
         orchestrator.restart_interval = args.restart_interval * 60  # Convert minutes to seconds
+        
+        # Update the model fleet to use the specified model
+        if args.ollama_model:
+            # Find the model in the fleet and set it as current
+            for i, model_info in enumerate(orchestrator.model_fleet_manager.model_fleet):
+                if model_info.name == args.ollama_model:
+                    orchestrator.model_fleet_manager.current_model_index = i
+                    orchestrator.model_fleet_manager.save_state()
+                    logger.info(f"Set model fleet to use: {args.ollama_model}")
+                    break
         
         if args.mode == 'daily':
             orchestrator.daily_workflow()
