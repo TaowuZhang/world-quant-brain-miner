@@ -66,6 +66,19 @@ class AlphaGenerator:
         self.vram_cleanup_interval = 10  # Cleanup every 10 operations
         self.operation_count = 0
         
+        # Model downgrade tracking
+        self.initial_model = getattr(self, 'model_name', 'deepseek-r1:8b')
+        self.error_count = 0
+        self.max_errors_before_downgrade = 3
+        self.model_fleet = [
+            'deepseek-r1:8b',   # Primary model
+            'deepseek-r1:7b',   # First fallback
+            'deepseek-r1:1.5b', # Second fallback
+            'llama3:3b',        # Third fallback
+            'phi3:mini'         # Emergency fallback
+        ]
+        self.current_model_index = 0
+        
     def setup_auth(self, credentials_path: str) -> None:
         """Set up authentication with WorldQuant Brain."""
         logging.info(f"Loading credentials from {credentials_path}")
@@ -279,7 +292,7 @@ market_ret = ts_product(1+group_mean(returns,1,market),250)-1;rfr = vec_avg(fnd6
 """
 
             # Prepare Ollama API request
-            model_name = getattr(self, 'model_name', 'phi3:mini')
+            model_name = getattr(self, 'model_name', self.model_fleet[self.current_model_index])
             ollama_data = {
                 'model': model_name,
                 'prompt': prompt,
@@ -290,17 +303,37 @@ market_ret = ts_product(1+group_mean(returns,1,market),250)-1;rfr = vec_avg(fnd6
             }
 
             print("Sending request to Ollama API...")
-            response = requests.post(
-                f'{self.ollama_url}/api/generate',
-                json=ollama_data,
-                timeout=120
-            )
+            try:
+                response = requests.post(
+                    f'{self.ollama_url}/api/generate',
+                    json=ollama_data,
+                    timeout=360  # 6 minutes timeout
+                )
 
-            print(f"Ollama API response status: {response.status_code}")
-            print(f"Ollama API response: {response.text[:500]}...")  # Print first 500 chars
+                print(f"Ollama API response status: {response.status_code}")
+                print(f"Ollama API response: {response.text[:500]}...")  # Print first 500 chars
 
-            if response.status_code != 200:
-                raise Exception(f"Ollama API request failed: {response.text}")
+                if response.status_code == 500:
+                    logging.error(f"Ollama API returned 500 error: {response.text}")
+                    # Trigger model downgrade for 500 errors
+                    self._handle_ollama_error("500_error")
+                    return []
+                elif response.status_code != 200:
+                    raise Exception(f"Ollama API request failed: {response.text}")
+                    
+            except requests.exceptions.Timeout:
+                logging.error("Ollama API request timed out (360s)")
+                # Trigger model downgrade for timeouts
+                self._handle_ollama_error("timeout")
+                return []
+            except requests.exceptions.ConnectionError as e:
+                if "Read timed out" in str(e):
+                    logging.error("Ollama API read timeout")
+                    # Trigger model downgrade for read timeouts
+                    self._handle_ollama_error("read_timeout")
+                    return []
+                else:
+                    raise e
 
             response_data = response.json()
             print(f"Ollama API response JSON keys: {list(response_data.keys())}")
@@ -342,6 +375,44 @@ market_ret = ts_product(1+group_mean(returns,1,market),250)-1;rfr = vec_avg(fnd6
                 self._hit_token_limit = True  # Mark that we hit token limit
             logging.error(f"Error generating alpha ideas: {str(e)}")
             return []
+    
+    def _handle_ollama_error(self, error_type: str):
+        """Handle Ollama errors by downgrading model if needed."""
+        self.error_count += 1
+        logging.warning(f"Ollama error ({error_type}) - Count: {self.error_count}/{self.max_errors_before_downgrade}")
+        
+        if self.error_count >= self.max_errors_before_downgrade:
+            self._downgrade_model()
+            self.error_count = 0  # Reset error count after downgrade
+    
+    def _downgrade_model(self):
+        """Downgrade to the next smaller model in the fleet."""
+        if self.current_model_index >= len(self.model_fleet) - 1:
+            logging.error("Already using the smallest model in the fleet!")
+            # Reset to initial model if we've exhausted all options
+            self.current_model_index = 0
+            self.model_name = self.initial_model
+            logging.info(f"Reset to initial model: {self.initial_model}")
+            return
+        
+        old_model = self.model_fleet[self.current_model_index]
+        self.current_model_index += 1
+        new_model = self.model_fleet[self.current_model_index]
+        
+        logging.warning(f"Downgrading model: {old_model} -> {new_model}")
+        self.model_name = new_model
+        
+        # Update the model in the orchestrator if it exists
+        try:
+            # Try to update the orchestrator's model fleet manager
+            if hasattr(self, 'orchestrator') and hasattr(self.orchestrator, 'model_fleet_manager'):
+                self.orchestrator.model_fleet_manager.current_model_index = self.current_model_index
+                self.orchestrator.model_fleet_manager.save_state()
+                logging.info(f"Updated orchestrator model fleet to use: {new_model}")
+        except Exception as e:
+            logging.warning(f"Could not update orchestrator model fleet: {e}")
+        
+        logging.info(f"Successfully downgraded to {new_model}")
 
     def test_alpha_batch(self, alphas: List[str]) -> None:
         """Submit a batch of alphas for testing with monitoring, respecting concurrent limits."""
@@ -748,8 +819,8 @@ def main():
                       help='Set the logging level (default: INFO)')
     parser.add_argument('--ollama-url', type=str, default='http://localhost:11434',
                       help='Ollama API URL (default: http://localhost:11434)')
-    parser.add_argument('--ollama-model', type=str, default='llama3.2:8b',
-                                             help='Ollama model to use (default: llama3.2:8b for RTX A4000)')
+    parser.add_argument('--ollama-model', type=str, default='deepseek-r1:8b',
+                                             help='Ollama model to use (default: deepseek-r1:8b for RTX A4000)')
     parser.add_argument('--max-concurrent', type=int, default=2,
                       help='Maximum concurrent simulations (default: 2)')
     
@@ -772,6 +843,7 @@ def main():
         # Initialize alpha generator with Ollama
         generator = AlphaGenerator(args.credentials, args.ollama_url, args.max_concurrent)
         generator.model_name = args.ollama_model  # Set the model name
+        generator.initial_model = args.ollama_model  # Set the initial model for reset
         
         # Get data fields and operators once
         print("Fetching data fields and operators...")
