@@ -281,6 +281,12 @@ class AlphaOrchestrator:
         self.last_restart_time = time.time()
         self.restart_thread = None
         
+        # Log monitoring
+        self.log_monitoring_active = False
+        self.log_monitor_thread = None
+        self.last_log_activity = time.time()
+        self.log_inactivity_timeout = 40  # 5 minutes of inactivity triggers reset
+        
     def setup_auth(self, credentials_path: str) -> None:
         """Set up authentication with WorldQuant Brain."""
         logger.info(f"Loading credentials from {credentials_path}")
@@ -338,6 +344,125 @@ class AlphaOrchestrator:
         if self.vram_monitor_thread:
             self.vram_monitor_thread.join(timeout=5)
         logger.info("Stopped VRAM monitoring")
+
+    def start_log_monitoring(self):
+        """Start log monitoring in a separate thread."""
+        if self.log_monitoring_active:
+            logger.info("Log monitoring already active")
+            return
+        
+        self.log_monitoring_active = True
+        self.log_monitor_thread = threading.Thread(target=self._log_monitor_loop, daemon=True)
+        self.log_monitor_thread.start()
+        logger.info("Started log monitoring thread")
+
+    def stop_log_monitoring(self):
+        """Stop log monitoring."""
+        self.log_monitoring_active = False
+        if self.log_monitor_thread:
+            self.log_monitor_thread.join(timeout=5)
+        logger.info("Stopped log monitoring")
+
+    def _log_monitor_loop(self):
+        """Log monitoring loop that checks for activity in alpha_generator_ollama.log."""
+        logger.info("Log monitoring loop started")
+        
+        while self.log_monitoring_active and self.running:
+            try:
+                # Check for activity in alpha_generator_ollama.log
+                if self._check_log_activity():
+                    self.last_log_activity = time.time()
+                    logger.debug("Log activity detected, resetting timer")
+                else:
+                    # Check if we've been inactive for too long
+                    time_since_activity = time.time() - self.last_log_activity
+                    if time_since_activity > self.log_inactivity_timeout:
+                        logger.warning(f"Log inactivity detected! No activity for {time_since_activity/60:.1f} minutes")
+                        logger.warning("Triggering application reset due to log inactivity")
+                        self._trigger_log_inactivity_reset()
+                        break
+                    else:
+                        remaining_time = self.log_inactivity_timeout - time_since_activity
+                        logger.debug(f"Log inactive for {time_since_activity/60:.1f} minutes, reset in {remaining_time/60:.1f} minutes")
+                
+                time.sleep(30)  # Check every 30 seconds
+                
+            except Exception as e:
+                logger.error(f"Error in log monitoring loop: {e}")
+                time.sleep(60)  # Wait longer on error
+        
+        logger.info("Log monitoring loop stopped")
+
+    def _check_log_activity(self) -> bool:
+        """Check if alpha_generator_ollama.log has recent activity."""
+        try:
+            log_file = 'alpha_generator_ollama.log'
+            if not os.path.exists(log_file):
+                logger.warning(f"Log file {log_file} not found")
+                return False
+            
+            # Get file modification time
+            file_mtime = os.path.getmtime(log_file)
+            current_time = time.time()
+            
+            # Check if file was modified in the last 2 minutes
+            if current_time - file_mtime < 120:  # 2 minutes
+                return True
+            
+            # Also check file size to see if it's growing
+            current_size = os.path.getsize(log_file)
+            
+            # Store previous size in a simple way (could be improved with a class variable)
+            if not hasattr(self, '_last_log_size'):
+                self._last_log_size = current_size
+                return True  # First time, assume activity
+            
+            if current_size > self._last_log_size:
+                self._last_log_size = current_size
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error checking log activity: {e}")
+            return False
+
+    def _trigger_log_inactivity_reset(self):
+        """Trigger a complete application reset due to log inactivity."""
+        try:
+            logger.warning("🔄 Triggering application reset due to log inactivity")
+            
+            # Stop all monitoring
+            self.stop_vram_monitoring()
+            self.stop_log_monitoring()
+            
+            # Reset model fleet to largest model
+            self.model_fleet_manager.reset_to_largest_model()
+            
+            # Stop all processes
+            self.stop_processes()
+            
+            # Wait a moment for processes to terminate
+            time.sleep(10)
+            
+            # Restart everything
+            logger.info("🔄 Restarting all processes after log inactivity reset")
+            
+            # Restart alpha generator
+            self.start_alpha_generator_continuous(batch_size=10, sleep_time=30)
+            
+            # Restart monitoring
+            self.start_vram_monitoring()
+            self.start_log_monitoring()
+            
+            # Reset timers
+            self.last_restart_time = time.time()
+            self.last_log_activity = time.time()
+            
+            logger.info("✅ Application reset completed after log inactivity")
+            
+        except Exception as e:
+            logger.error(f"❌ Error during log inactivity reset: {e}")
 
     def _vram_monitor_loop(self):
         """VRAM monitoring loop that checks for errors and handles model downgrading."""
@@ -498,7 +623,7 @@ class AlphaOrchestrator:
                         '--expression', expression,
                         '--auto-mode',  # Run in automated mode
                         '--output-file', f'mining_results_{i}.json'
-                    ], capture_output=True, text=True, timeout=300)
+                    ], capture_output=True, text=True, timeout=40)
                     
                     if result.returncode == 0:
                         logger.info(f"Successfully mined alpha {i}")
@@ -648,6 +773,10 @@ class AlphaOrchestrator:
             logger.info("🔄 Restarting VRAM monitoring...")
             self.start_vram_monitoring()
             
+            # Restart log monitoring
+            logger.info("🔄 Restarting log monitoring...")
+            self.start_log_monitoring()
+            
             logger.info("✅ All processes restarted successfully")
             self.last_restart_time = time.time()
             
@@ -665,6 +794,9 @@ class AlphaOrchestrator:
         
         # Stop VRAM monitoring
         self.stop_vram_monitoring()
+        
+        # Stop log monitoring
+        self.stop_log_monitoring()
         
         if self.generator_process:
             logger.info("Terminating alpha generator process...")
@@ -711,6 +843,10 @@ class AlphaOrchestrator:
             logger.info("Starting VRAM monitoring...")
             self.start_vram_monitoring()
             
+            # Start log monitoring
+            logger.info("Starting log monitoring...")
+            self.start_log_monitoring()
+            
             # Start restart monitoring
             logger.info("Starting restart monitoring...")
             self.start_restart_monitoring()
@@ -750,7 +886,7 @@ class AlphaOrchestrator:
                     break
                 except Exception as e:
                     logger.error(f"Error in continuous mining: {e}")
-                    time.sleep(300)  # Wait 5 minutes before retrying
+                    time.sleep(40)  # Wait 5 minutes before retrying
                     
         finally:
             self.stop_processes()
@@ -773,6 +909,8 @@ def main():
                       help='Restart interval in minutes (default: 30)')
     parser.add_argument('--ollama-model', type=str, default='deepseek-r1:8b',
                       help='Ollama model to use (default: deepseek-r1:8b)')
+    parser.add_argument('--log-timeout', type=int, default=40,
+                      help='Log inactivity timeout in seconds before reset (default: 300)')
     
     args = parser.parse_args()
     
@@ -780,6 +918,7 @@ def main():
         orchestrator = AlphaOrchestrator(args.credentials, args.ollama_url)
         orchestrator.max_concurrent_simulations = args.max_concurrent
         orchestrator.restart_interval = args.restart_interval * 60  # Convert minutes to seconds
+        orchestrator.log_inactivity_timeout = args.log_timeout
         
         # Update the model fleet to use the specified model
         if args.ollama_model:
