@@ -76,10 +76,17 @@ class MachineMiner:
         logging.info(f"Results saved to machine_results_{timestamp}.json")
 
 def main():
-    username = "YOUR USERNAME"
-    password = "YOUR PASSWORD"
+    # Read credentials from credential.txt
+    try:
+        with open('credential.txt', 'r') as f:
+            credentials = json.load(f)
+        username = credentials[0]
+        password = credentials[1]
+    except (FileNotFoundError, json.JSONDecodeError, IndexError) as e:
+        raise ValueError(f"Error reading credentials from credential.txt: {e}")
+    
     if not username or not password:
-        raise ValueError("Please set WQ_USERNAME and WQ_PASSWORD environment variables")
+        raise ValueError("Invalid credentials in credential.txt")
         
     miner = MachineMiner(username, password)
     miner.mine_alphas()

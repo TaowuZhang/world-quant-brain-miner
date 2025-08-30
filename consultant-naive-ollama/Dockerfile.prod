@@ -1,0 +1,49 @@
+FROM nvidia/cuda:11.6.2-base-ubuntu20.04
+
+# Set environment variables for CUDA
+ENV DEBIAN_FRONTEND=noninteractive
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=${CUDA_HOME}/bin:${PATH}
+ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies including Python and CUDA tools
+RUN apt-get update && apt-get install -y \
+    python3.8 \
+    python3.8-dev \
+    python3-pip \
+    curl \
+    wget \
+    git \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create symlink for python
+RUN ln -s /usr/bin/python3.8 /usr/bin/python
+
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install Ollama
+RUN curl -fsSL https://ollama.ai/install.sh | sh
+
+# Copy application code
+COPY . .
+
+# Copy the start scripts and make them executable
+COPY start.sh /app/start.sh
+COPY start_ollama.sh /app/start_ollama.sh
+RUN chmod +x /app/start.sh /app/start_ollama.sh
+
+# Create a non-root user for security
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+USER appuser
+
+# Expose Ollama port
+EXPOSE 11434
+
+# Set the entrypoint
+ENTRYPOINT ["/app/start.sh"]

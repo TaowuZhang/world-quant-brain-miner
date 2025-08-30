@@ -1,0 +1,115 @@
+version: '3.8'
+
+services:
+  naive-ollma:
+    build: .
+    container_name: naive-ollma-gpu
+    runtime: nvidia
+    ports:
+      - "11434:11434"  # Ollama API port
+    volumes:
+      - ./credential.txt:/app/credential.txt:ro  # Mount credentials
+      - ./results:/app/results  # Mount results directory
+      - ./logs:/app/logs  # Mount logs directory
+      - .:/app  # Mount current directory for hopeful_alphas.json sharing
+      - ollama_data:/root/.ollama  # Persist Ollama models
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_ORIGINS=*
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - CUDA_VISIBLE_DEVICES=0
+      - OLLAMA_GPU_LAYERS=20
+      - OLLAMA_NUM_PARALLEL=1
+      - OLLAMA_GPU_MEMORY_UTILIZATION=0.8
+      - OLLAMA_GPU_MEMORY_FRACTION=0.8
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+        limits:
+          memory: 12G
+          cpus: '4.0'
+    restart: unless-stopped
+    command: ["python", "alpha_orchestrator.py", "--mode", "continuous", "--batch-size", "2", "--max-concurrent", "2"]
+    networks:
+      - naive-ollma-network
+
+  # Optional: Add a simple web interface for monitoring
+  ollama-webui:
+    image: ghcr.io/ollama-webui/ollama-webui:main
+    container_name: ollama-webui-gpu
+    ports:
+      - "3000:8080"
+    environment:
+      - OLLAMA_API_BASE_URL=http://naive-ollma-gpu:11434/api
+    depends_on:
+      - naive-ollma
+    restart: unless-stopped
+    networks:
+      - naive-ollma-network
+      
+  # Machine Miner Service
+  machine-miner:
+    build: .
+    container_name: machine-miner-gpu
+    runtime: nvidia
+    volumes:
+      - ./credential.txt:/app/credential.txt:ro
+      - ./results:/app/results
+      - ./logs:/app/logs
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - CUDA_VISIBLE_DEVICES=0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+        limits:
+          memory: 8G
+          cpus: '2.0'
+    restart: unless-stopped
+    command: ["python", "machine_miner.py", "--credentials", "/app/credential.txt", "--region", "USA", "--universe", "TOP3000"]
+    depends_on:
+      - naive-ollma
+    networks:
+      - naive-ollma-network
+
+  # Alpha Generator Dashboard
+  alpha-dashboard:
+    build: .
+    container_name: alpha-dashboard-gpu
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./results:/app/results
+      - ./logs:/app/logs
+      - ./credential.txt:/app/credential.txt:ro
+      - .:/app  # Mount current directory for hopeful_alphas.json sharing
+    environment:
+      - FLASK_ENV=production
+      - PYTHONUNBUFFERED=1
+    command: ["python", "web_dashboard.py"]
+    depends_on:
+      - naive-ollma
+    restart: unless-stopped
+    networks:
+      - naive-ollma-network
+
+volumes:
+  ollama_data:
+    driver: local
+
+networks:
+  naive-ollma-network:
+    driver: bridge
