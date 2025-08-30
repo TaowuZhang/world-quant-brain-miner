@@ -5,7 +5,7 @@ Write-Host "🚀 Building and pushing Consultant-Naive-Ollama to Docker Hub..." 
 
 # Get Docker Hub username
 $DockerHubUsername = Read-Host "Enter your Docker Hub username"
-$Version = "v1.4.2"
+$Version = "v1.4.3"
 
 # Check if Docker is running
 try {
@@ -67,6 +67,7 @@ Write-Host "📦 Latest: $DockerHubUsername/consultant-naive-ollama:latest" -For
 Write-Host ""
 Write-Host "🚀 New features in this version:" -ForegroundColor Yellow
 Write-Host "   • Generates 100 alpha ideas per cycle, simulates in batches of 10 (orchestrator updated)" -ForegroundColor White
+Write-Host "   • Log monitoring with automatic reset on inactivity (5 min timeout)" -ForegroundColor White
 Write-Host "   • Uses multi_simulate for efficient concurrent processing" -ForegroundColor White
 Write-Host "   • Increased max concurrent simulations to 5" -ForegroundColor White
 Write-Host "   • Better batch management and monitoring" -ForegroundColor White

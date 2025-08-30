@@ -8,6 +8,7 @@ from requests.auth import HTTPBasicAuth
 from typing import List, Dict, Tuple
 import time
 import logging
+from itertools import product
 
 # Configure logging at the top of the file
 logging.basicConfig(
@@ -26,6 +27,41 @@ class AlphaExpressionMiner:
         self.sess = requests.Session()
         self.credentials_path = credentials_path  # Store for reauth
         self.setup_auth(credentials_path)
+        
+        # Define the simulation parameter choices based on the API schema
+        self.simulation_choices = {
+            'instrumentType': ['EQUITY'],
+            'region': ['USA', 'GLB', 'EUR', 'ASI', 'CHN'],
+            'universe': {
+                'USA': ['TOP3000', 'TOP1000', 'TOP500', 'TOP200', 'ILLIQUID_MINVOL1M', 'TOPSP500'],
+                'GLB': ['TOP3000', 'MINVOL1M', 'TOPDIV3000'],
+                'EUR': ['TOP2500', 'TOP1200', 'TOP800', 'TOP400', 'ILLIQUID_MINVOL1M'],
+                'ASI': ['MINVOL1M', 'ILLIQUID_MINVOL1M'],
+                'CHN': ['TOP2000U']
+            },
+            'delay': {
+                'USA': [1, 0],
+                'GLB': [1],
+                'EUR': [1, 0],
+                'ASI': [1],
+                'CHN': [0, 1]
+            },
+            'decay': list(range(0, 513)),  # 0 to 512
+            'neutralization': {
+                'USA': ['NONE', 'REVERSION_AND_MOMENTUM', 'STATISTICAL', 'CROWDING', 'FAST', 'SLOW', 'MARKET', 'SECTOR', 'INDUSTRY', 'SUBINDUSTRY', 'SLOW_AND_FAST'],
+                'GLB': ['NONE', 'REVERSION_AND_MOMENTUM', 'STATISTICAL', 'CROWDING', 'FAST', 'SLOW', 'MARKET', 'SECTOR', 'INDUSTRY', 'SUBINDUSTRY', 'COUNTRY', 'SLOW_AND_FAST'],
+                'EUR': ['NONE', 'REVERSION_AND_MOMENTUM', 'STATISTICAL', 'CROWDING', 'FAST', 'SLOW', 'MARKET', 'SECTOR', 'INDUSTRY', 'SUBINDUSTRY', 'COUNTRY', 'SLOW_AND_FAST'],
+                'ASI': ['NONE', 'REVERSION_AND_MOMENTUM', 'STATISTICAL', 'CROWDING', 'FAST', 'SLOW', 'MARKET', 'SECTOR', 'INDUSTRY', 'SUBINDUSTRY', 'COUNTRY', 'SLOW_AND_FAST'],
+                'CHN': ['NONE', 'REVERSION_AND_MOMENTUM', 'CROWDING', 'FAST', 'SLOW', 'MARKET', 'SECTOR', 'INDUSTRY', 'SUBINDUSTRY', 'SLOW_AND_FAST']
+            },
+            'truncation': [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10, 0.15, 0.20, 0.25, 0.30],
+            'pasteurization': ['ON', 'OFF'],
+            'unitHandling': ['VERIFY'],
+            'nanHandling': ['ON', 'OFF'],
+            'maxTrade': ['OFF', 'ON'],
+            'language': ['FASTEXPR'],
+            'visualization': [False, True]
+        }
         
     def setup_auth(self, credentials_path: str) -> None:
         """Set up authentication with WorldQuant Brain."""
@@ -232,7 +268,6 @@ class AlphaExpressionMiner:
             param_values.append(values)
         
         # Generate all combinations
-        from itertools import product
         for value_combination in product(*param_values):
             new_expr = expression
             for param, value in zip(parameters, value_combination):
@@ -243,12 +278,167 @@ class AlphaExpressionMiner:
         logger.info(f"Generated {len(variations)} total variations")
         return variations
 
-    def test_alpha_batch(self, alpha_expressions: List[str]) -> List[Dict]:
-        """Test multiple alpha expressions using multi_simulate approach."""
-        logger.info(f"Testing batch of {len(alpha_expressions)} alphas using multi_simulate")
+    def generate_simulation_configurations(self, max_configs: int = 50) -> List[Dict]:
+        """
+        Generate different simulation configurations based on the API schema.
+        Returns a list of configuration dictionaries.
+        """
+        logger.info(f"Generating simulation configurations (max: {max_configs})")
         
-        # Group alphas into pools of 10 for better management
-        pool_size = 10
+        configs = []
+        
+        # Start with a base configuration
+        base_config = {
+            'type': 'REGULAR',
+            'settings': {
+                'instrumentType': 'EQUITY',
+                'region': 'USA',
+                'universe': 'TOP3000',
+                'delay': 1,
+                'decay': 0,
+                'neutralization': 'INDUSTRY',
+                'truncation': 0.08,
+                'pasteurization': 'ON',
+                'unitHandling': 'VERIFY',
+                'nanHandling': 'OFF',
+                'maxTrade': 'OFF',
+                'language': 'FASTEXPR',
+                'visualization': False,
+            }
+        }
+        configs.append(base_config)
+        
+        # Generate variations by changing key parameters
+        # Focus on the most important parameters first
+        
+        # 1. Different regions with their corresponding universes and delays
+        for region in self.simulation_choices['region']:
+            if region != 'USA':  # Skip USA as it's in base config
+                for universe in self.simulation_choices['universe'].get(region, ['TOP3000']):
+                    for delay in self.simulation_choices['delay'].get(region, [1]):
+                        config = base_config.copy()
+                        config['settings'] = config['settings'].copy()
+                        config['settings']['region'] = region
+                        config['settings']['universe'] = universe
+                        config['settings']['delay'] = delay
+                        configs.append(config)
+                        
+                        if len(configs) >= max_configs:
+                            logger.info(f"Reached max configs limit ({max_configs})")
+                            return configs
+        
+        # 2. Different neutralization strategies
+        for region in ['USA', 'GLB', 'EUR']:  # Focus on main regions
+            for neutralization in self.simulation_choices['neutralization'].get(region, ['INDUSTRY']):
+                if neutralization != 'INDUSTRY':  # Skip INDUSTRY as it's in base config
+                    config = base_config.copy()
+                    config['settings'] = config['settings'].copy()
+                    config['settings']['region'] = region
+                    config['settings']['neutralization'] = neutralization
+                    # Adjust universe and delay based on region
+                    config['settings']['universe'] = self.simulation_choices['universe'][region][0]
+                    config['settings']['delay'] = self.simulation_choices['delay'][region][0]
+                    configs.append(config)
+                    
+                    if len(configs) >= max_configs:
+                        logger.info(f"Reached max configs limit ({max_configs})")
+                        return configs
+        
+        # 3. Different truncation values
+        for truncation in [0.05, 0.10, 0.15, 0.20]:
+            if truncation != 0.08:  # Skip 0.08 as it's in base config
+                config = base_config.copy()
+                config['settings'] = config['settings'].copy()
+                config['settings']['truncation'] = truncation
+                configs.append(config)
+                
+                if len(configs) >= max_configs:
+                    logger.info(f"Reached max configs limit ({max_configs})")
+                    return configs
+        
+        # 4. Different decay values
+        for decay in [25, 50, 256, 512]:
+            if decay != 0:  # Skip 0 as it's in base config
+                config = base_config.copy()
+                config['settings'] = config['settings'].copy()
+                config['settings']['decay'] = decay
+                configs.append(config)
+                
+                if len(configs) >= max_configs:
+                    logger.info(f"Reached max configs limit ({max_configs})")
+                    return configs
+        
+        # 5. Different pasteurization and nan handling
+        for pasteurization in ['OFF']:
+            for nan_handling in ['ON']:
+                config = base_config.copy()
+                config['settings'] = config['settings'].copy()
+                config['settings']['pasteurization'] = pasteurization
+                config['settings']['nanHandling'] = nan_handling
+                configs.append(config)
+                
+                if len(configs) >= max_configs:
+                    logger.info(f"Reached max configs limit ({max_configs})")
+                    return configs
+        
+        logger.info(f"Generated {len(configs)} simulation configurations")
+        return configs
+
+    def save_configurations_to_file(self, configs: List[Dict], filename: str = "simulation_configs.json"):
+        """Save simulation configurations to a file for reference."""
+        try:
+            with open(filename, 'w') as f:
+                json.dump(configs, f, indent=2)
+            logger.info(f"Saved {len(configs)} configurations to {filename}")
+        except Exception as e:
+            logger.error(f"Error saving configurations to {filename}: {e}")
+
+    def get_configuration_summary(self, configs: List[Dict]) -> Dict:
+        """Get a summary of the configurations for logging."""
+        summary = {
+            'total_configs': len(configs),
+            'regions': set(),
+            'universes': set(),
+            'neutralizations': set(),
+            'truncations': set(),
+            'decays': set()
+        }
+        
+        for config in configs:
+            settings = config.get('settings', {})
+            summary['regions'].add(settings.get('region', 'unknown'))
+            summary['universes'].add(settings.get('universe', 'unknown'))
+            summary['neutralizations'].add(settings.get('neutralization', 'unknown'))
+            summary['truncations'].add(settings.get('truncation', 'unknown'))
+            summary['decays'].add(settings.get('decay', 'unknown'))
+        
+        # Convert sets to lists for JSON serialization
+        for key in summary:
+            if isinstance(summary[key], set):
+                summary[key] = list(summary[key])
+        
+        return summary
+
+    def test_alpha_batch(self, alpha_expressions: List[str], max_configs_per_alpha: int = 10, config_filename: str = "simulation_configs.json", pool_size: int = 5) -> List[Dict]:
+        """Test multiple alpha expressions using multi_simulate approach with different configurations."""
+        logger.info(f"Testing batch of {len(alpha_expressions)} alphas using multi_simulate with different configurations")
+        
+        # Generate simulation configurations
+        simulation_configs = self.generate_simulation_configurations(max_configs=max_configs_per_alpha)
+        logger.info(f"Using {len(simulation_configs)} different simulation configurations")
+        
+        # Log configuration summary
+        config_summary = self.get_configuration_summary(simulation_configs)
+        logger.info(f"Configuration summary: {config_summary}")
+        
+        # Save configurations to file for reference
+        self.save_configurations_to_file(simulation_configs, config_filename)
+        
+        # Group alphas into pools for better management (reduced due to multiple configs)
+        logger.info(f"Using pool size of {pool_size} alphas per pool")
+        total_concurrent_sims = pool_size * len(simulation_configs)
+        logger.info(f"Total concurrent simulations per pool: {total_concurrent_sims} ({pool_size} alphas × {len(simulation_configs)} configs)")
+        
         alpha_pools = []
         for i in range(0, len(alpha_expressions), pool_size):
             pool = alpha_expressions[i:i + pool_size]
@@ -262,60 +452,53 @@ class AlphaExpressionMiner:
             logger.info(f"Processing pool {pool_idx + 1}/{len(alpha_pools)} with {len(pool)} alphas")
             
             progress_urls = []
-            alpha_mapping = {}  # Map progress URLs to alpha expressions
+            alpha_mapping = {}  # Map progress URLs to alpha expressions and configs
             
-            # Submit all alphas in this pool
+            # Submit all alphas in this pool with different configurations
             for alpha_idx, alpha in enumerate(pool):
-                logger.info(f"Submitting alpha {alpha_idx + 1}/{len(pool)} in pool {pool_idx + 1}")
+                logger.info(f"Submitting alpha {alpha_idx + 1}/{len(pool)} in pool {pool_idx + 1} with {len(simulation_configs)} configurations")
                 
-                try:
-                    # Generate simulation data
-                    simulation_data = {
-                        'type': 'REGULAR',
-                        'settings': {
-                            'instrumentType': 'EQUITY',
-                            'region': 'USA',
-                            'universe': 'TOP3000',
-                            'delay': 1,
-                            'decay': 0,
-                            'neutralization': 'INDUSTRY',
-                            'truncation': 0.08,
-                            'pasteurization': 'ON',
-                            'unitHandling': 'VERIFY',
-                            'nanHandling': 'OFF',
-                            'language': 'FASTEXPR',
-                            'visualization': False,
-                        },
-                        'regular': alpha
-                    }
-                    
-                    # Submit simulation
-                    simulation_response = self.sess.post('https://api.worldquantbrain.com/simulations', 
-                                                       json=simulation_data)
-                    
-                    # Handle authentication errors
-                    if simulation_response.status_code == 401:
-                        logger.info("Session expired, re-authenticating...")
-                        self.setup_auth(self.credentials_path)
+                for config_idx, config in enumerate(simulation_configs):
+                    try:
+                        # Create simulation data with current configuration
+                        simulation_data = config.copy()
+                        simulation_data['regular'] = alpha
+                        
+                        # Add config identifier for tracking
+                        config_id = f"config_{config_idx}"
+                        
+                        logger.debug(f"Submitting alpha with config {config_idx + 1}/{len(simulation_configs)}: {config['settings']['region']}-{config['settings']['universe']}-{config['settings']['neutralization']}")
+                        
+                        # Submit simulation
                         simulation_response = self.sess.post('https://api.worldquantbrain.com/simulations', 
                                                            json=simulation_data)
-                    
-                    if simulation_response.status_code != 201:
-                        logger.error(f"Simulation API error for alpha {alpha}: {simulation_response.text}")
+                        
+                        # Handle authentication errors
+                        if simulation_response.status_code == 401:
+                            logger.info("Session expired, re-authenticating...")
+                            self.setup_auth(self.credentials_path)
+                            simulation_response = self.sess.post('https://api.worldquantbrain.com/simulations', 
+                                                               json=simulation_data)
+                        
+                        if simulation_response.status_code != 201:
+                            logger.error(f"Simulation API error for alpha {alpha} with config {config_idx}: {simulation_response.text}")
+                            continue
+                        
+                        simulation_progress_url = simulation_response.headers.get('Location')
+                        if not simulation_progress_url:
+                            logger.error(f"No Location header in response for alpha {alpha} with config {config_idx}")
+                            continue
+                        
+                        progress_urls.append(simulation_progress_url)
+                        alpha_mapping[simulation_progress_url] = {
+                            'alpha': alpha,
+                            'config': config,
+                            'config_id': config_id
+                        }
+                        
+                    except Exception as e:
+                        logger.error(f"Error submitting alpha {alpha} with config {config_idx}: {str(e)}")
                         continue
-                    
-                    simulation_progress_url = simulation_response.headers.get('Location')
-                    if not simulation_progress_url:
-                        logger.error(f"No Location header in response for alpha {alpha}")
-                        continue
-                    
-                    progress_urls.append(simulation_progress_url)
-                    alpha_mapping[simulation_progress_url] = alpha
-                    logger.info(f"Successfully submitted alpha {alpha_idx + 1}, got progress URL: {simulation_progress_url}")
-                    
-                except Exception as e:
-                    logger.error(f"Error submitting alpha {alpha}: {str(e)}")
-                    continue
             
             # Monitor progress for this pool
             if progress_urls:
@@ -331,7 +514,7 @@ class AlphaExpressionMiner:
         logger.info(f"Multi-simulate batch complete: {len(all_results)} successful simulations")
         return all_results
 
-    def _monitor_pool_progress(self, progress_urls: List[str], alpha_mapping: Dict[str, str]) -> List[Dict]:
+    def _monitor_pool_progress(self, progress_urls: List[str], alpha_mapping: Dict[str, Dict]) -> List[Dict]:
         """Monitor progress for a pool of simulations."""
         results = []
         max_wait_time = 3600  # 1 hour maximum wait time
@@ -373,23 +556,33 @@ class AlphaExpressionMiner:
                     status = sim_result.get("status")
                     
                     if status == "COMPLETE" or status == "WARNING":
-                        alpha_expression = alpha_mapping.get(progress_url, "unknown")
-                        logger.info(f"Simulation completed successfully for: {alpha_expression}")
+                        alpha_info = alpha_mapping.get(progress_url, {})
+                        alpha_expression = alpha_info.get('alpha', "unknown")
+                        config = alpha_info.get('config', {})
+                        config_id = alpha_info.get('config_id', "unknown")
+                        
+                        logger.info(f"Simulation completed successfully for: {alpha_expression} with config {config_id}")
                         results.append({
                             "expression": alpha_expression,
+                            "config": config,
+                            "config_id": config_id,
                             "result": sim_result
                         })
                         completed_urls.append(progress_url)
                         
                     elif status in ["FAILED", "ERROR"]:
-                        alpha_expression = alpha_mapping.get(progress_url, "unknown")
-                        logger.error(f"Simulation failed for alpha: {alpha_expression}")
+                        alpha_info = alpha_mapping.get(progress_url, {})
+                        alpha_expression = alpha_info.get('alpha', "unknown")
+                        config_id = alpha_info.get('config_id', "unknown")
+                        logger.error(f"Simulation failed for alpha: {alpha_expression} with config {config_id}")
                         completed_urls.append(progress_url)
                     
                     # Handle simulation limits
                     elif "SIMULATION_LIMIT_EXCEEDED" in sim_progress_resp.text:
-                        alpha_expression = alpha_mapping.get(progress_url, "unknown")
-                        logger.info(f"Simulation limit exceeded for alpha: {alpha_expression}")
+                        alpha_info = alpha_mapping.get(progress_url, {})
+                        alpha_expression = alpha_info.get('alpha', "unknown")
+                        config_id = alpha_info.get('config_id', "unknown")
+                        logger.info(f"Simulation limit exceeded for alpha: {alpha_expression} with config {config_id}")
                         completed_urls.append(progress_url)
                 
                 except Exception as e:
@@ -433,6 +626,12 @@ def main():
                       help='Run in automated mode without user interaction')
     parser.add_argument('--output-file', type=str, default='mined_expressions.json',
                       help='Output file for results (default: mined_expressions.json)')
+    parser.add_argument('--max-configs', type=int, default=10,
+                      help='Maximum number of simulation configurations per alpha (default: 10)')
+    parser.add_argument('--save-configs', type=str, default='simulation_configs.json',
+                      help='File to save simulation configurations (default: simulation_configs.json)')
+    parser.add_argument('--pool-size', type=int, default=5,
+                      help='Number of alphas to process concurrently in each pool (default: 5)')
     
     args = parser.parse_args()
     
@@ -442,6 +641,8 @@ def main():
     logger.info(f"Starting alpha expression mining with parameters:")
     logger.info(f"Expression: {args.expression}")
     logger.info(f"Output file: {args.output}")
+    logger.info(f"Max configs per alpha: {args.max_configs}")
+    logger.info(f"Pool size (concurrent alphas): {args.pool_size}")
     
     miner = AlphaExpressionMiner(args.credentials)
     
@@ -474,9 +675,9 @@ def main():
     # Generate variations
     variations = miner.generate_variations(args.expression, selected_params)
     
-    # Test variations using multi_simulate
-    logger.info(f"Testing {len(variations)} variations using multi_simulate (10 at a time)")
-    results = miner.test_alpha_batch(variations)
+    # Test variations using multi_simulate with different configurations
+    logger.info(f"Testing {len(variations)} variations using multi_simulate with {args.max_configs} configs per alpha")
+    results = miner.test_alpha_batch(variations, max_configs_per_alpha=args.max_configs, config_filename=args.save_configs, pool_size=args.pool_size)
     logger.info(f"Successfully tested {len(results)} variations")
     
     # Save results
