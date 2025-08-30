@@ -24,6 +24,7 @@ class AlphaExpressionMiner:
     def __init__(self, credentials_path: str):
         logger.info("Initializing AlphaExpressionMiner")
         self.sess = requests.Session()
+        self.credentials_path = credentials_path  # Store for reauth
         self.setup_auth(credentials_path)
         
     def setup_auth(self, credentials_path: str) -> None:
@@ -242,86 +243,180 @@ class AlphaExpressionMiner:
         logger.info(f"Generated {len(variations)} total variations")
         return variations
 
-    def test_alpha(self, alpha_expression: str) -> Dict:
-        """Test an alpha expression using WorldQuant Brain simulation."""
-        logger.info(f"Testing alpha: {alpha_expression}")
+    def test_alpha_batch(self, alpha_expressions: List[str]) -> List[Dict]:
+        """Test multiple alpha expressions using multi_simulate approach."""
+        logger.info(f"Testing batch of {len(alpha_expressions)} alphas using multi_simulate")
         
-        simulation_data = {
-            'type': 'REGULAR',
-            'settings': {
-                'instrumentType': 'EQUITY',
-                'region': 'USA',
-                'universe': 'TOP3000',
-                'delay': 1,
-                'decay': 0,
-                'neutralization': 'INDUSTRY',
-                'truncation': 0.08,
-                'pasteurization': 'ON',
-                'unitHandling': 'VERIFY',
-                'nanHandling': 'OFF',
-                'language': 'FASTEXPR',
-                'visualization': False,
-            },
-            'regular': alpha_expression
-        }
-
-        sim_resp = self.sess.post('https://api.worldquantbrain.com/simulations', json=simulation_data)
-        logger.info(f"Simulation creation response: {sim_resp.status_code}")
+        # Group alphas into pools of 10 for better management
+        pool_size = 10
+        alpha_pools = []
+        for i in range(0, len(alpha_expressions), pool_size):
+            pool = alpha_expressions[i:i + pool_size]
+            alpha_pools.append(pool)
         
-        if sim_resp.status_code != 201:
-            logger.error(f"Simulation creation failed: {sim_resp.text}")
-            return {"status": "error", "message": sim_resp.text}
-
-        sim_progress_url = sim_resp.headers.get('location')
-        if not sim_progress_url:
-            logger.error("No simulation ID received in response headers")
-            return {"status": "error", "message": "No simulation ID received"}
+        logger.info(f"Created {len(alpha_pools)} pools of size {pool_size}")
         
-        logger.info(f"Monitoring simulation at: {sim_progress_url}")
+        all_results = []
         
-        # Monitor simulation progress
-        retry_count = 0
-        max_retries = 3
-        while True:
-            try:
-                sim_progress_resp = self.sess.get(sim_progress_url)
+        for pool_idx, pool in enumerate(alpha_pools):
+            logger.info(f"Processing pool {pool_idx + 1}/{len(alpha_pools)} with {len(pool)} alphas")
+            
+            progress_urls = []
+            alpha_mapping = {}  # Map progress URLs to alpha expressions
+            
+            # Submit all alphas in this pool
+            for alpha_idx, alpha in enumerate(pool):
+                logger.info(f"Submitting alpha {alpha_idx + 1}/{len(pool)} in pool {pool_idx + 1}")
                 
-                # Handle empty response
-                if not sim_progress_resp.text.strip():
-                    logger.debug("Empty response, simulation still initializing...")
-                    sleep(10)
-                    continue
-                
-                # Try to parse JSON response
                 try:
-                    progress_data = sim_progress_resp.json()
-                except json.JSONDecodeError as e:
-                    logger.warning(f"Failed to decode JSON response: {sim_progress_resp.text}")
-                    retry_count += 1
-                    if retry_count > max_retries:
-                        logger.error("Max retries exceeded for JSON decode")
-                        return {"status": "error", "message": "Failed to decode simulation response"}
-                    sleep(10)
+                    # Generate simulation data
+                    simulation_data = {
+                        'type': 'REGULAR',
+                        'settings': {
+                            'instrumentType': 'EQUITY',
+                            'region': 'USA',
+                            'universe': 'TOP3000',
+                            'delay': 1,
+                            'decay': 0,
+                            'neutralization': 'INDUSTRY',
+                            'truncation': 0.08,
+                            'pasteurization': 'ON',
+                            'unitHandling': 'VERIFY',
+                            'nanHandling': 'OFF',
+                            'language': 'FASTEXPR',
+                            'visualization': False,
+                        },
+                        'regular': alpha
+                    }
+                    
+                    # Submit simulation
+                    simulation_response = self.sess.post('https://api.worldquantbrain.com/simulations', 
+                                                       json=simulation_data)
+                    
+                    # Handle authentication errors
+                    if simulation_response.status_code == 401:
+                        logger.info("Session expired, re-authenticating...")
+                        self.setup_auth(self.credentials_path)
+                        simulation_response = self.sess.post('https://api.worldquantbrain.com/simulations', 
+                                                           json=simulation_data)
+                    
+                    if simulation_response.status_code != 201:
+                        logger.error(f"Simulation API error for alpha {alpha}: {simulation_response.text}")
+                        continue
+                    
+                    simulation_progress_url = simulation_response.headers.get('Location')
+                    if not simulation_progress_url:
+                        logger.error(f"No Location header in response for alpha {alpha}")
+                        continue
+                    
+                    progress_urls.append(simulation_progress_url)
+                    alpha_mapping[simulation_progress_url] = alpha
+                    logger.info(f"Successfully submitted alpha {alpha_idx + 1}, got progress URL: {simulation_progress_url}")
+                    
+                except Exception as e:
+                    logger.error(f"Error submitting alpha {alpha}: {str(e)}")
                     continue
+            
+            # Monitor progress for this pool
+            if progress_urls:
+                pool_results = self._monitor_pool_progress(progress_urls, alpha_mapping)
+                all_results.extend(pool_results)
+                logger.info(f"Pool {pool_idx + 1} completed with {len(pool_results)} successful simulations")
+            
+            # Wait between pools to avoid overwhelming the API
+            if pool_idx + 1 < len(alpha_pools):
+                logger.info(f"Waiting 1 second before next pool...")
+                sleep(1)
+        
+        logger.info(f"Multi-simulate batch complete: {len(all_results)} successful simulations")
+        return all_results
+
+    def _monitor_pool_progress(self, progress_urls: List[str], alpha_mapping: Dict[str, str]) -> List[Dict]:
+        """Monitor progress for a pool of simulations."""
+        results = []
+        max_wait_time = 3600  # 1 hour maximum wait time
+        start_time = time.time()
+        
+        while progress_urls and (time.time() - start_time) < max_wait_time:
+            logger.info(f"Monitoring {len(progress_urls)} simulations in pool...")
+            
+            completed_urls = []
+            for progress_url in progress_urls:
+                try:
+                    # Check simulation status
+                    sim_progress_resp = self.sess.get(progress_url)
+                    
+                    # Handle rate limits
+                    if sim_progress_resp.status_code == 429:
+                        retry_after = sim_progress_resp.headers.get("Retry-After", "60")
+                        logger.info(f"Rate limit hit, waiting {retry_after} seconds...")
+                        time.sleep(int(float(retry_after)))
+                        continue
+                    
+                    if sim_progress_resp.status_code != 200:
+                        logger.error(f"Failed to check progress for {progress_url}: {sim_progress_resp.status_code}")
+                        completed_urls.append(progress_url)
+                        continue
+                    
+                    # Handle empty response
+                    if not sim_progress_resp.text.strip():
+                        logger.debug("Empty response, simulation still initializing...")
+                        continue
+                    
+                    # Try to parse JSON response
+                    try:
+                        sim_result = sim_progress_resp.json()
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Failed to decode JSON response: {sim_progress_resp.text}")
+                        continue
+                    
+                    status = sim_result.get("status")
+                    
+                    if status == "COMPLETE" or status == "WARNING":
+                        alpha_expression = alpha_mapping.get(progress_url, "unknown")
+                        logger.info(f"Simulation completed successfully for: {alpha_expression}")
+                        results.append({
+                            "expression": alpha_expression,
+                            "result": sim_result
+                        })
+                        completed_urls.append(progress_url)
+                        
+                    elif status in ["FAILED", "ERROR"]:
+                        alpha_expression = alpha_mapping.get(progress_url, "unknown")
+                        logger.error(f"Simulation failed for alpha: {alpha_expression}")
+                        completed_urls.append(progress_url)
+                    
+                    # Handle simulation limits
+                    elif "SIMULATION_LIMIT_EXCEEDED" in sim_progress_resp.text:
+                        alpha_expression = alpha_mapping.get(progress_url, "unknown")
+                        logger.info(f"Simulation limit exceeded for alpha: {alpha_expression}")
+                        completed_urls.append(progress_url)
                 
-                status = progress_data.get("status")
-                logger.info(f"Simulation status: {status}")
-                
-                if status == "COMPLETE" or status == "WARNING":
-                    logger.info("Simulation completed successfully")
-                    return {"status": "success", "result": progress_data}
-                elif status in ["FAILED", "ERROR"]:
-                    logger.error(f"Simulation failed: {progress_data}")
-                    return {"status": "error", "message": progress_data}
-                
+                except Exception as e:
+                    logger.error(f"Error monitoring progress for {progress_url}: {str(e)}")
+                    completed_urls.append(progress_url)
+            
+            # Remove completed URLs
+            for url in completed_urls:
+                progress_urls.remove(url)
+            
+            # Wait before next check
+            if progress_urls:
                 sleep(10)
-                
-            except requests.exceptions.RequestException as e:
-                logger.error(f"Request error: {str(e)}")
-                retry_count += 1
-                if retry_count > max_retries:
-                    return {"status": "error", "message": f"Request failed after {max_retries} retries"}
-                sleep(10)
+        
+        if progress_urls:
+            logger.warning(f"Pool monitoring timeout reached, {len(progress_urls)} simulations still pending")
+        
+        return results
+
+    def test_alpha(self, alpha_expression: str) -> Dict:
+        """Test a single alpha expression (legacy method for backward compatibility)."""
+        logger.info(f"Testing single alpha: {alpha_expression}")
+        results = self.test_alpha_batch([alpha_expression])
+        if results:
+            return {"status": "success", "result": results[0]["result"]}
+        else:
+            return {"status": "error", "message": "Simulation failed"}
 
 def main():
     parser = argparse.ArgumentParser(description='Mine alpha expression variations')
@@ -379,21 +474,10 @@ def main():
     # Generate variations
     variations = miner.generate_variations(args.expression, selected_params)
     
-    # Test variations
-    results = []
-    total = len(variations)
-    for i, var in enumerate(variations, 1):
-        logger.info(f"Testing variation {i}/{total}: {var}")
-        result = miner.test_alpha(var)
-        if result["status"] == "success":
-            logger.info(f"Successful test for: {var}")
-            results.append({
-                "expression": var,
-                "result": result["result"]
-            })
-        else:
-            logger.error(f"Failed to test variation: {var}")
-            logger.error(f"Error: {result['message']}")
+    # Test variations using multi_simulate
+    logger.info(f"Testing {len(variations)} variations using multi_simulate (10 at a time)")
+    results = miner.test_alpha_batch(variations)
+    logger.info(f"Successfully tested {len(results)} variations")
     
     # Save results
     output_file = args.output_file if hasattr(args, 'output_file') else args.output

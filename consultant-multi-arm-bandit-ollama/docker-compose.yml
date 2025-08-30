@@ -1,0 +1,170 @@
+version: '3.8'
+
+services:
+  # Ollama service for AI model serving
+  ollama:
+    build: .
+    container_name: integrated-ollama
+    runtime: nvidia
+    ports:
+      - "11434:11434"  # Ollama API port
+    volumes:
+      - ./credential.txt:/app/credential.txt:ro  # Mount credentials
+      - ./results:/app/results  # Mount results directory
+      - ./logs:/app/logs  # Mount logs directory
+      - .:/app  # Mount current directory for state files
+      - ollama_data:/root/.ollama  # Persist Ollama models
+      # Mount NVIDIA libraries from host (standard approach)
+      - /usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:ro
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_ORIGINS=*
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - CUDA_VISIBLE_DEVICES=0
+      - OLLAMA_GPU_LAYERS=20
+      - OLLAMA_NUM_PARALLEL=1
+      - OLLAMA_GPU_MEMORY_UTILIZATION=0.8
+      - OLLAMA_GPU_MEMORY_FRACTION=0.8
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+        limits:
+          memory: 12G
+          cpus: '4.0'
+    restart: unless-stopped
+    command: ["/app/start_ollama.sh"]
+    networks:
+      - integrated-mining-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Alpha Orchestrator Service (Main Service)
+  # This service manages the integrated alpha miner and coordinates all mining operations
+  alpha-orchestrator:
+    build: .
+    container_name: alpha-orchestrator
+    runtime: nvidia
+    volumes:
+      - ./credential.txt:/app/credential.txt:ro
+      - ./results:/app/results
+      - ./logs:/app/logs
+      - .:/app
+      - orchestrator_state:/app/orchestrator_state
+      # Mount NVIDIA libraries from host (standard approach)
+      - /usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - CUDA_VISIBLE_DEVICES=0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+        limits:
+          memory: 8G
+          cpus: '2.0'
+    restart: unless-stopped
+    command: [
+      "python", "alpha_orchestrator.py",
+      "--credentials", "/app/credential.txt",
+      "--mode", "continuous",
+      "--ollama-url", "http://ollama:11434",
+      "--ollama-model", "deepseek-r1:8b",
+      "--mining-interval", "6",
+      "--max-concurrent", "3",
+      "--adaptive-batch-size", "5",
+      "--adaptive-iterations", "3",
+      "--lateral-count", "3",
+      "--generator-batch-size", "10",
+      "--generator-sleep-time", "30"
+    ]
+    depends_on:
+      - ollama
+    networks:
+      - integrated-mining-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; exit(0 if os.path.exists('/app/orchestrator_state.json') else 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+  # Web Dashboard for monitoring (Optional)
+  web-dashboard:
+    build: .
+    container_name: web-dashboard
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./results:/app/results:ro
+      - ./logs:/app/logs:ro
+      - .:/app:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      - FLASK_ENV=production
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2.0'
+        reservations:
+          memory: 2G
+          cpus: '1.0'
+    restart: unless-stopped
+    command: ["python", "web_dashboard.py", "--port", "8080"]
+    depends_on:
+      - alpha-orchestrator
+    networks:
+      - integrated-mining-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Optional: Ollama WebUI for model management
+  ollama-webui:
+    image: ghcr.io/ollama-webui/ollama-webui:main
+    container_name: ollama-webui
+    ports:
+      - "3000:8080"
+    environment:
+      - OLLAMA_API_BASE_URL=http://ollama:11434/api
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+    depends_on:
+      - ollama
+    restart: unless-stopped
+    networks:
+      - integrated-mining-network
+
+volumes:
+  ollama_data:
+    driver: local
+  orchestrator_state:
+    driver: local
+
+networks:
+  integrated-mining-network:
+    driver: bridge

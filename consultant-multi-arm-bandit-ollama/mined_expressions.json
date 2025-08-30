@@ -1,0 +1,427 @@
+[
+  {
+    "expression": "ts_std_dev(anl4_fcf_flag, 50)",
+    "result": {
+      "id": "BxTmI3Ju52M8CqpL51szx0",
+      "type": "REGULAR",
+      "settings": {
+        "instrumentType": "EQUITY",
+        "region": "USA",
+        "universe": "TOP3000",
+        "delay": 1,
+        "decay": 0,
+        "neutralization": "INDUSTRY",
+        "truncation": 0.08,
+        "pasteurization": "ON",
+        "unitHandling": "VERIFY",
+        "nanHandling": "OFF",
+        "maxTrade": "OFF",
+        "language": "FASTEXPR",
+        "visualization": false
+      },
+      "regular": "ts_std_dev(anl4_fcf_flag, 50)",
+      "status": "COMPLETE",
+      "alpha": "amAwwPx"
+    }
+  },
+  {
+    "expression": "ts_std_dev(anl4_fcf_flag, 55)",
+    "result": {
+      "id": "3SedHb16C4mk93d85gGTs4d",
+      "type": "REGULAR",
+      "settings": {
+        "instrumentType": "EQUITY",
+        "region": "USA",
+        "universe": "TOP3000",
+        "delay": 1,
+        "decay": 0,
+        "neutralization": "INDUSTRY",
+        "truncation": 0.08,
+        "pasteurization": "ON",
+        "unitHandling": "VERIFY",
+        "nanHandling": "OFF",
+        "maxTrade": "OFF",
+        "language": "FASTEXPR",
+        "visualization": false
+      },
+      "regular": "ts_std_dev(anl4_fcf_flag, 55)",
+      "status": "COMPLETE",
+      "alpha": "gNRLJ3Q"
+    }
+  },
+  {
+    "expression": "ts_std_dev(anl4_fcf_flag, 60)",
+    "result": {
+      "id": "1tOQxF7N4MaaymS3r16jVw",
+      "type": "REGULAR",
+      "settings": {
+        "instrumentType": "EQUITY",
+        "region": "USA",
+        "universe": "TOP3000",
+        "delay": 1,
+        "decay": 0,
+        "neutralization": "INDUSTRY",
+        "truncation": 0.08,
+        "pasteurization": "ON",
+        "unitHandling": "VERIFY",
+        "nanHandling": "OFF",
+        "maxTrade": "OFF",
+        "language": "FASTEXPR",
+        "visualization": false
+      },
+      "regular": "ts_std_dev(anl4_fcf_flag, 60)",
+      "status": "COMPLETE",
+      "alpha": "PLwKjKJ"
+    }
+  },
+  {
+    "expression": "ts_std_dev(anl4_fcf_flag, 65)",
+    "result": {
+      "id": "3b9TXL9dk4JubCkzcyHq5yo",
+      "type": "REGULAR",
+      "settings": {
+        "instrumentType": "EQUITY",
+        "region": "USA",
+        "universe": "TOP3000",
+        "delay": 1,
+        "decay": 0,
+        "neutralization": "INDUSTRY",
+        "truncation": 0.08,
+        "pasteurization": "ON",
+        "unitHandling": "VERIFY",
+        "nanHandling": "OFF",
+        "maxTrade": "OFF",
+        "language": "FASTEXPR",
+        "visualization": false
+      },
+      "regular": "ts_std_dev(anl4_fcf_flag, 65)",
+      "status": "COMPLETE",
+      "alpha": "5KaYggX"
+    }
+  },
+  {
+    "expression": "ts_std_dev(anl4_fcf_flag, 70)",
+    "result": {
+      "id": "3B9U3UdGq5ibbqzvdLY2D8f",
+      "type": "REGULAR",
+      "settings": {
+        "instrumentType": "EQUITY",
+        "region": "USA",
+        "universe": "TOP3000",
+        "delay": 1,
+        "decay": 0,
+        "neutralization": "INDUSTRY",
+        "truncation": 0.08,
+        "pasteurization": "ON",
+        "unitHandling": "VERIFY",
+        "nanHandling": "OFF",
+        "maxTrade": "OFF",
+        "language": "FASTEXPR",
+        "visualization": false
+      },
+      "regular": "ts_std_dev(anl4_fcf_flag, 70)",
+      "status": "COMPLETE",
+      "alpha": "x7P5WVn"
+    }
+  },
+  {
+    "expression": "ts_std_dev(anl4_fcf_flag, 75)",
+    "result": {
+      "id": "2wcBKB7345ciaOx95pR64iI",
+      "type": "REGULAR",
+      "settings": {
+        "instrumentType": "EQUITY",
+        "region": "USA",
+        "universe": "TOP3000",
+        "delay": 1,
+        "decay": 0,
+        "neutralization": "INDUSTRY",
+        "truncation": 0.08,
+        "pasteurization": "ON",
+        "unitHandling": "VERIFY",
+        "nanHandling": "OFF",
+        "maxTrade": "OFF",
+        "language": "FASTEXPR",
+        "visualization": false
+      },
+      "regular": "ts_std_dev(anl4_fcf_flag, 75)",
+      "status": "COMPLETE",
+      "alpha": "z7PLa0O"
+    }
+  },
+  {
+    "expression": "ts_std_dev(anl4_fcf_flag, 80)",
+    "result": {
+      "id": "2tylS3gBa4pfcognQteiYFt",
+      "type": "REGULAR",
+      "settings": {
+        "instrumentType": "EQUITY",
+        "region": "USA",
+        "universe": "TOP3000",
+        "delay": 1,
+        "decay": 0,
+        "neutralization": "INDUSTRY",
+        "truncation": 0.08,
+        "pasteurization": "ON",
+        "unitHandling": "VERIFY",
+        "nanHandling": "OFF",
+        "maxTrade": "OFF",
+        "language": "FASTEXPR",
+        "visualization": false
+      },
+      "regular": "ts_std_dev(anl4_fcf_flag, 80)",
+      "status": "COMPLETE",
+      "alpha": "5Ka2ajN"
+    }
+  },
+  {
+    "expression": "ts_std_dev(anl4_fcf_flag, 85)",
+    "result": {
+      "id": "3LgwnU5Hf4Tv9OzXVFBHuMk",
+      "type": "REGULAR",
+      "settings": {
+        "instrumentType": "EQUITY",
+        "region": "USA",
+        "universe": "TOP3000",
+        "delay": 1,
+        "decay": 0,
+        "neutralization": "INDUSTRY",
+        "truncation": 0.08,
+        "pasteurization": "ON",
+        "unitHandling": "VERIFY",
+        "nanHandling": "OFF",
+        "maxTrade": "OFF",
+        "language": "FASTEXPR",
+        "visualization": false
+      },
+      "regular": "ts_std_dev(anl4_fcf_flag, 85)",
+      "status": "COMPLETE",
+      "alpha": "Log275a"
+    }
+  },
+  {
+    "expression": "ts_std_dev(anl4_fcf_flag, 90)",
+    "result": {
+      "id": "3U2qYG79I4hX9lJ19GsAtTZy",
+      "type": "REGULAR",
+      "settings": {
+        "instrumentType": "EQUITY",
+        "region": "USA",
+        "universe": "TOP3000",
+        "delay": 1,
+        "decay": 0,
+        "neutralization": "INDUSTRY",
+        "truncation": 0.08,
+        "pasteurization": "ON",
+        "unitHandling": "VERIFY",
+        "nanHandling": "OFF",
+        "maxTrade": "OFF",
+        "language": "FASTEXPR",
+        "visualization": false
+      },
+      "regular": "ts_std_dev(anl4_fcf_flag, 90)",
+      "status": "COMPLETE",
+      "alpha": "AXgP3mg"
+    }
+  },
+  {
+    "expression": "ts_std_dev(anl4_fcf_flag, 95)",
+    "result": {
+      "id": "LX5Kc5Fx4LXcBwthWEmONx",
+      "type": "REGULAR",
+      "settings": {
+        "instrumentType": "EQUITY",
+        "region": "USA",
+        "universe": "TOP3000",
+        "delay": 1,
+        "decay": 0,
+        "neutralization": "INDUSTRY",
+        "truncation": 0.08,
+        "pasteurization": "ON",
+        "unitHandling": "VERIFY",
+        "nanHandling": "OFF",
+        "maxTrade": "OFF",
+        "language": "FASTEXPR",
+        "visualization": false
+      },
+      "regular": "ts_std_dev(anl4_fcf_flag, 95)",
+      "status": "COMPLETE",
+      "alpha": "mnrlWL1"
+    }
+  },
+  {
+    "expression": "ts_std_dev(anl4_fcf_flag, 100)",
+    "result": {
+      "id": "1epuyR3Eg58QchIccgxsU0X",
+      "type": "REGULAR",
+      "settings": {
+        "instrumentType": "EQUITY",
+        "region": "USA",
+        "universe": "TOP3000",
+        "delay": 1,
+        "decay": 0,
+        "neutralization": "INDUSTRY",
+        "truncation": 0.08,
+        "pasteurization": "ON",
+        "unitHandling": "VERIFY",
+        "nanHandling": "OFF",
+        "maxTrade": "OFF",
+        "language": "FASTEXPR",
+        "visualization": false
+      },
+      "regular": "ts_std_dev(anl4_fcf_flag, 100)",
+      "status": "COMPLETE",
+      "alpha": "x7Poqwm"
+    }
+  },
+  {
+    "expression": "ts_std_dev(anl4_fcf_flag, 105)",
+    "result": {
+      "id": "1a9Xoyem54JtbWn1cG8suyvR",
+      "type": "REGULAR",
+      "settings": {
+        "instrumentType": "EQUITY",
+        "region": "USA",
+        "universe": "TOP3000",
+        "delay": 1,
+        "decay": 0,
+        "neutralization": "INDUSTRY",
+        "truncation": 0.08,
+        "pasteurization": "ON",
+        "unitHandling": "VERIFY",
+        "nanHandling": "OFF",
+        "maxTrade": "OFF",
+        "language": "FASTEXPR",
+        "visualization": false
+      },
+      "regular": "ts_std_dev(anl4_fcf_flag, 105)",
+      "status": "COMPLETE",
+      "alpha": "nGZlY9d"
+    }
+  },
+  {
+    "expression": "ts_std_dev(anl4_fcf_flag, 110)",
+    "result": {
+      "id": "23qREN7Hk4YoawGPCdAqrlW",
+      "type": "REGULAR",
+      "settings": {
+        "instrumentType": "EQUITY",
+        "region": "USA",
+        "universe": "TOP3000",
+        "delay": 1,
+        "decay": 0,
+        "neutralization": "INDUSTRY",
+        "truncation": 0.08,
+        "pasteurization": "ON",
+        "unitHandling": "VERIFY",
+        "nanHandling": "OFF",
+        "maxTrade": "OFF",
+        "language": "FASTEXPR",
+        "visualization": false
+      },
+      "regular": "ts_std_dev(anl4_fcf_flag, 110)",
+      "status": "COMPLETE",
+      "alpha": "gNR51Qv"
+    }
+  },
+  {
+    "expression": "ts_std_dev(anl4_fcf_flag, 115)",
+    "result": {
+      "id": "1OfGT92Gx54Dbcg14wdn28xD",
+      "type": "REGULAR",
+      "settings": {
+        "instrumentType": "EQUITY",
+        "region": "USA",
+        "universe": "TOP3000",
+        "delay": 1,
+        "decay": 0,
+        "neutralization": "INDUSTRY",
+        "truncation": 0.08,
+        "pasteurization": "ON",
+        "unitHandling": "VERIFY",
+        "nanHandling": "OFF",
+        "maxTrade": "OFF",
+        "language": "FASTEXPR",
+        "visualization": false
+      },
+      "regular": "ts_std_dev(anl4_fcf_flag, 115)",
+      "status": "COMPLETE",
+      "alpha": "AXg5xRw"
+    }
+  },
+  {
+    "expression": "ts_std_dev(anl4_fcf_flag, 120)",
+    "result": {
+      "id": "2A9hYkcwT5dOamE1265UuoH7",
+      "type": "REGULAR",
+      "settings": {
+        "instrumentType": "EQUITY",
+        "region": "USA",
+        "universe": "TOP3000",
+        "delay": 1,
+        "decay": 0,
+        "neutralization": "INDUSTRY",
+        "truncation": 0.08,
+        "pasteurization": "ON",
+        "unitHandling": "VERIFY",
+        "nanHandling": "OFF",
+        "maxTrade": "OFF",
+        "language": "FASTEXPR",
+        "visualization": false
+      },
+      "regular": "ts_std_dev(anl4_fcf_flag, 120)",
+      "status": "COMPLETE",
+      "alpha": "XZ2xx1b"
+    }
+  },
+  {
+    "expression": "ts_std_dev(anl4_fcf_flag, 125)",
+    "result": {
+      "id": "1p3Qos7nJ56gckl7JRMPMJi",
+      "type": "REGULAR",
+      "settings": {
+        "instrumentType": "EQUITY",
+        "region": "USA",
+        "universe": "TOP3000",
+        "delay": 1,
+        "decay": 0,
+        "neutralization": "INDUSTRY",
+        "truncation": 0.08,
+        "pasteurization": "ON",
+        "unitHandling": "VERIFY",
+        "nanHandling": "OFF",
+        "maxTrade": "OFF",
+        "language": "FASTEXPR",
+        "visualization": false
+      },
+      "regular": "ts_std_dev(anl4_fcf_flag, 125)",
+      "status": "COMPLETE",
+      "alpha": "2Vao8kY"
+    }
+  },
+  {
+    "expression": "ts_std_dev(anl4_fcf_flag, 130)",
+    "result": {
+      "id": "tF54Adh94JOb2cVzjBhslx",
+      "type": "REGULAR",
+      "settings": {
+        "instrumentType": "EQUITY",
+        "region": "USA",
+        "universe": "TOP3000",
+        "delay": 1,
+        "decay": 0,
+        "neutralization": "INDUSTRY",
+        "truncation": 0.08,
+        "pasteurization": "ON",
+        "unitHandling": "VERIFY",
+        "nanHandling": "OFF",
+        "maxTrade": "OFF",
+        "language": "FASTEXPR",
+        "visualization": false
+      },
+      "regular": "ts_std_dev(anl4_fcf_flag, 130)",
+      "status": "COMPLETE",
+      "alpha": "oj30vmn"
+    }
+  }
+]

@@ -228,49 +228,156 @@ class AlphaAnalyzer:
     
     def _find_related_fields(self, fields: List[str], improvement_request: str = None) -> List[FieldSuggestion]:
         """Find related fields using vector database."""
-        if not self.vector_db:
-            return []
-        
         suggestions = []
+        
+        if not self.vector_db:
+            return suggestions
+        
+        # If improvement request mentions volume, search with context-aware prompts
+        if improvement_request and "volume" in improvement_request.lower():
+            try:
+                # Create context-aware search prompts for volume-related fields
+                volume_prompts = [
+                    f"volume trading data fields for alpha expressions",
+                    f"volume liquidity market data variables",
+                    f"volume turnover trading metrics",
+                    f"volume weighted average price vwap",
+                    f"volume correlation price relationship"
+                ]
+                
+                for prompt in volume_prompts:
+                    volume_results = self.vector_db.search_by_text(prompt, top_k=5)
+                    
+                    for result in volume_results:
+                        if hasattr(result, 'fields'):
+                            metadata = result.fields
+                            result_dict = result.to_dict()
+                            field_id = result_dict.get('_id', '')  # The actual field ID is in _id
+                            field_name = metadata.get('name', '')
+                            relevance_score = result._score
+                        elif hasattr(result, 'metadata'):
+                            metadata = result.metadata
+                            field_id = getattr(result, 'id', '')  # Traditional format uses id attribute
+                            field_name = metadata.get('name', '')
+                            relevance_score = result.score
+                        else:
+                            continue
+                        
+                        # Skip if it's not a volume-related field
+                        if not any(vol_term in field_name.lower() for vol_term in ["volume", "turnover", "trade", "liquidity", "flow"]):
+                            continue
+                        
+                        # Use the actual field ID from Pinecone record ID
+                        if not field_id:
+                            continue
+                        
+                        # Generate suggested combination using field_id
+                        suggested_combination = self._generate_field_combination(fields[0] if fields else "close", field_id, improvement_request)
+                        
+                        suggestion = FieldSuggestion(
+                            field_name=field_id,  # Use actual field ID from Pinecone
+                            description=metadata.get('description', ''),
+                            category=metadata.get('category', ''),
+                            relevance_score=relevance_score + 0.5,  # Boost for volume-specific search
+                            suggested_combination=suggested_combination
+                        )
+                        suggestions.append(suggestion)
+                    
+            except Exception as e:
+                print(f"Error searching for volume fields: {e}")
         
         for field in fields:
             try:
-                # Search for related fields
-                results = self.vector_db.search_by_text(field, top_k=5)
+                # Create context-aware search prompts for each field
+                context_prompts = [
+                    f"{field} related market data fields",
+                    f"{field} alternative data variables",
+                    f"{field} fundamental analysis fields",
+                    f"{field} technical indicators"
+                ]
+                
+                # If improvement request is provided, add it to context
+                if improvement_request:
+                    context_prompts.append(f"{field} {improvement_request} related fields")
+                
+                all_results = []
+                for prompt in context_prompts:
+                    results = self.vector_db.search_by_text(prompt, top_k=3)
+                    all_results.extend(results)
+                
+                # Remove duplicates and take top results
+                seen_fields = set()
+                unique_results = []
+                for result in all_results:
+                    if hasattr(result, 'fields'):
+                        field_id = result.fields.get('id', '')
+                        field_name = result.fields.get('name', '')
+                    elif hasattr(result, 'metadata'):
+                        field_id = result.metadata.get('id', '')
+                        field_name = result.metadata.get('name', '')
+                    else:
+                        continue
+                    
+                    # Use field_id if available, otherwise use field_name
+                    display_name = field_id if field_id else field_name
+                    
+                    if display_name and display_name not in seen_fields:
+                        seen_fields.add(display_name)
+                        unique_results.append(result)
+                
+                results = unique_results[:5]  # Take top 5 unique results
                 
                 for result in results:
                     # Handle different result structures from hosted embeddings vs traditional search
                     if hasattr(result, 'fields'):
                         # Hosted embeddings response format
                         metadata = result.fields
+                        result_dict = result.to_dict()
+                        field_id = result_dict.get('_id', '')  # The actual field ID is in _id
                         field_name = metadata.get('name', '')
                         relevance_score = result._score
                     elif hasattr(result, 'metadata'):
                         # Traditional search response format
                         metadata = result.metadata
+                        field_id = getattr(result, 'id', '')  # Traditional format uses id attribute
                         field_name = metadata.get('name', '')
                         relevance_score = result.score
                     else:
                         continue
                     
-                    # Skip if it's the same field
-                    if field_name.lower() == field.lower():
+                    # Skip if field_id is None or empty, or if it's the same field
+                    if not field_id or field_id.lower() == field.lower():
                         continue
                     
                     # Calculate relevance based on improvement request
                     if improvement_request:
-                        if "turnover" in improvement_request.lower() and "volatility" in field_name.lower():
+                        request_lower = improvement_request.lower()
+                        
+                        # Volume-specific relevance boosting
+                        if "volume" in request_lower:
+                            if "volume" in field_name.lower():
+                                relevance_score += 0.5  # Strong boost for volume fields
+                            elif any(vol_term in field_name.lower() for vol_term in ["turnover", "trade", "liquidity", "flow"]):
+                                relevance_score += 0.3  # Medium boost for related fields
+                        
+                        # Turnover-specific relevance boosting
+                        if "turnover" in request_lower and "volatility" in field_name.lower():
                             relevance_score += 0.2
-                        if "robust" in improvement_request.lower() and "stability" in field_name.lower():
+                        
+                        # Robustness-specific relevance boosting
+                        if "robust" in request_lower and "stability" in field_name.lower():
                             relevance_score += 0.2
-                        if "risk" in improvement_request.lower() and "risk" in field_name.lower():
+                        
+                        # Risk-specific relevance boosting
+                        if "risk" in request_lower and "risk" in field_name.lower():
                             relevance_score += 0.2
                     
-                    # Generate suggested combination
-                    suggested_combination = self._generate_field_combination(field, field_name, improvement_request)
+                    # Use the actual field ID from Pinecone record ID
+                    # Generate suggested combination using field_id
+                    suggested_combination = self._generate_field_combination(field, field_id, improvement_request)
                     
                     suggestion = FieldSuggestion(
-                        field_name=field_name,
+                        field_name=field_id,  # Use actual field ID from Pinecone
                         description=metadata.get('description', ''),
                         category=metadata.get('category', ''),
                         relevance_score=relevance_score,
@@ -285,19 +392,228 @@ class AlphaAnalyzer:
         suggestions.sort(key=lambda x: x.relevance_score, reverse=True)
         return suggestions[:10]  # Return top 10 suggestions
     
+    def _convert_to_variable_name(self, field_name: str) -> str:
+        """Convert descriptive field name to variable-like name."""
+        if not field_name:
+            return field_name
+            
+        # Convert to lowercase
+        name = field_name.lower()
+        
+        # Remove common phrases and convert to snake_case
+        replacements = [
+            (' - ', '_'),
+            (' per ', '_per_'),
+            (' of ', '_of_'),
+            (' the ', '_'),
+            (' for ', '_for_'),
+            (' from ', '_from_'),
+            (' to ', '_to_'),
+            (' in ', '_in_'),
+            (' on ', '_on_'),
+            (' at ', '_at_'),
+            (' with ', '_with_'),
+            (' by ', '_by_'),
+            (' and ', '_and_'),
+            (' or ', '_or_'),
+            ('free cash flow', 'fcf'),
+            ('cash flow', 'cf'),
+            ('estimation', 'est'),
+            ('estimations', 'est'),
+            ('highest', 'high'),
+            ('lowest', 'low'),
+            ('mean', 'avg'),
+            ('average', 'avg'),
+            ('number', 'num'),
+            ('diluted', 'dil'),
+            ('basic', 'bas'),
+            ('preliminary', 'prelim'),
+            ('adjustment', 'adj'),
+            ('pension', 'pen'),
+            ('effect', 'eff'),
+            ('brokers', 'broker'),
+            ('recommendation', 'rec'),
+            ('index', 'idx'),
+            ('provider', 'prov'),
+            ('news', 'news'),
+            ('price', 'prc'),
+            ('volume', 'vol'),
+            ('turnover', 'to'),
+            ('liquidity', 'liq'),
+            ('volatility', 'vol'),
+            ('correlation', 'corr'),
+            ('ratio', 'rat'),
+            ('change', 'chg'),
+            ('percent', 'pct'),
+            ('percentage', 'pct'),
+            ('difference', 'diff'),
+            ('minimum', 'min'),
+            ('maximum', 'max'),
+            ('total', 'tot'),
+            ('current', 'curr'),
+            ('previous', 'prev'),
+            ('daily', 'dly'),
+            ('monthly', 'mth'),
+            ('quarterly', 'qtr'),
+            ('annual', 'ann'),
+            ('yearly', 'yr'),
+            ('financial', 'fin'),
+            ('fundamental', 'fund'),
+            ('technical', 'tech'),
+            ('market', 'mkt'),
+            ('trading', 'trade'),
+            ('stock', 'stk'),
+            ('equity', 'eq'),
+            ('debt', 'debt'),
+            ('asset', 'asset'),
+            ('liability', 'liab'),
+            ('revenue', 'rev'),
+            ('earnings', 'earn'),
+            ('profit', 'prof'),
+            ('income', 'inc'),
+            ('expense', 'exp'),
+            ('cost', 'cost'),
+            ('capital', 'cap'),
+            ('investment', 'inv'),
+            ('return', 'ret'),
+            ('growth', 'grw'),
+            ('performance', 'perf'),
+            ('value', 'val'),
+            ('valuation', 'val'),
+            ('multiple', 'mult'),
+            ('dividend', 'div'),
+            ('yield', 'yld'),
+            ('beta', 'beta'),
+            ('alpha', 'alpha'),
+            ('sharpe', 'sharpe'),
+            ('var', 'var'),
+            ('std', 'std'),
+            ('deviation', 'dev'),
+            ('variance', 'var'),
+            ('skewness', 'skew'),
+            ('kurtosis', 'kurt'),
+            ('momentum', 'mom'),
+            ('trend', 'trend'),
+            ('signal', 'sig'),
+            ('indicator', 'ind'),
+            ('oscillator', 'osc'),
+            ('moving average', 'ma'),
+            ('exponential', 'exp'),
+            ('simple', 'smp'),
+            ('weighted', 'wgt'),
+            ('relative', 'rel'),
+            ('absolute', 'abs'),
+            ('normalized', 'norm'),
+            ('standardized', 'std'),
+            ('scaled', 'scl'),
+            ('ranked', 'rank'),
+            ('percentile', 'pct'),
+            ('quantile', 'qnt'),
+            ('decile', 'dec'),
+            ('quintile', 'quint'),
+            ('tercile', 'terc'),
+            ('median', 'med'),
+            ('mode', 'mode'),
+            ('sum', 'sum'),
+            ('count', 'cnt'),
+            ('frequency', 'freq'),
+            ('duration', 'dur'),
+            ('period', 'per'),
+            ('cycle', 'cyc'),
+            ('seasonal', 'seas'),
+            ('cyclical', 'cycl'),
+            ('trending', 'trend'),
+            ('mean reversion', 'mr'),
+            ('momentum', 'mom'),
+            ('breakout', 'brk'),
+            ('support', 'sup'),
+            ('resistance', 'res'),
+            ('overbought', 'ob'),
+            ('oversold', 'os'),
+            ('divergence', 'div'),
+            ('convergence', 'conv'),
+            ('crossover', 'cross'),
+            ('golden cross', 'gc'),
+            ('death cross', 'dc'),
+            ('bullish', 'bull'),
+            ('bearish', 'bear'),
+            ('neutral', 'neut'),
+            ('positive', 'pos'),
+            ('negative', 'neg'),
+            ('zero', 'zero'),
+            ('one', 'one'),
+            ('two', 'two'),
+            ('three', 'three'),
+            ('four', 'four'),
+            ('five', 'five'),
+            ('six', 'six'),
+            ('seven', 'seven'),
+            ('eight', 'eight'),
+            ('nine', 'nine'),
+            ('ten', 'ten'),
+            ('hundred', 'hundred'),
+            ('thousand', 'k'),
+            ('million', 'm'),
+            ('billion', 'b'),
+            ('trillion', 't')
+        ]
+        
+        for old, new in replacements:
+            name = name.replace(old, new)
+        
+        # Remove special characters and replace with underscores
+        import re
+        name = re.sub(r'[^a-z0-9_]', '_', name)
+        
+        # Remove multiple consecutive underscores
+        name = re.sub(r'_+', '_', name)
+        
+        # Remove leading/trailing underscores
+        name = name.strip('_')
+        
+        # If name is too long, truncate it
+        if len(name) > 40:
+            words = name.split('_')
+            if len(words) > 4:
+                name = '_'.join(words[:4])
+            else:
+                name = name[:40]
+        
+        return name if name else 'field'
+    
     def _generate_field_combination(self, original_field: str, new_field: str, improvement_request: str = None) -> str:
         """Generate a suggested combination of fields."""
         if improvement_request:
             request_lower = improvement_request.lower()
             
-            if "turnover" in request_lower:
+            # Volume-specific combinations
+            if "volume" in request_lower:
+                if "volume" in new_field.lower():
+                    # Use volume as a multiplier or condition
+                    return f"multiply({original_field}, {new_field})"
+                elif any(vol_term in new_field.lower() for vol_term in ["turnover", "trade", "liquidity"]):
+                    # Use turnover/liquidity for conditional logic
+                    return f"if_else(greater({new_field}, ts_mean({new_field}, 20)), {original_field}, 0)"
+                else:
+                    # General volume-weighted approach
+                    return f"multiply({original_field}, ts_mean({new_field}, 10))"
+            
+            # Turnover-specific combinations
+            elif "turnover" in request_lower:
                 return f"subtract({original_field}, {new_field})"
+            
+            # Robustness-specific combinations
             elif "robust" in request_lower:
                 return f"ts_corr({original_field}, {new_field}, 20)"
+            
+            # Risk-specific combinations
             elif "risk" in request_lower:
                 return f"if_else(greater({original_field}, ts_mean({original_field}, 20)), {new_field}, 0)"
+            
+            # Condition-specific combinations
             elif "condition" in request_lower:
                 return f"if_else(greater({original_field}, 0), {new_field}, 0)"
+            
             else:
                 return f"add({original_field}, {new_field})"
         else:
@@ -394,11 +710,47 @@ class AlphaAnalyzer:
         """Generate custom improvements based on the improvement request using vector database inference."""
         improvements = []
         
+        # Add volume-specific suggestions if requested
+        if improvement_request and "volume" in improvement_request.lower():
+            if "volume" not in [field.lower() for field in parsed.fields]:
+                improvements.append(f"Volume-weighted: multiply({parsed.original}, volume)")
+            improvements.append(f"Price-volume correlation: ts_corr({parsed.original}, volume, 20)")
+            improvements.append(f"Volume-based scaling: scale({parsed.original}, volume)")
+            improvements.append(f"Volume condition: if_else(greater(volume, ts_mean(volume, 20)), {parsed.original}, 0)")
+            improvements.append(f"Volume ratio filter: multiply({parsed.original}, volume / ts_mean(volume, 20))")
+        
         # Use vector database to find relevant operators based on the improvement request
         if self.vector_db:
             try:
-                # Search for operators that match the improvement request
-                operator_results = self.vector_db.search_operators(improvement_request, top_k=10)
+                # Create context-aware search prompts for operators
+                operator_prompts = [
+                    f"operators for {improvement_request}",
+                    f"alpha expression operators {improvement_request}",
+                    f"WorldQuant operators {improvement_request}",
+                    f"trading operators {improvement_request}"
+                ]
+                
+                all_operator_results = []
+                for prompt in operator_prompts:
+                    operator_results = self.vector_db.search_operators(prompt, top_k=5)
+                    all_operator_results.extend(operator_results)
+                
+                # Remove duplicates and take top results
+                seen_operators = set()
+                unique_operator_results = []
+                for result in all_operator_results:
+                    if hasattr(result, 'fields'):
+                        operator_name = result.fields.get('name', '')
+                    elif hasattr(result, 'metadata'):
+                        operator_name = result.metadata.get('name', '')
+                    else:
+                        continue
+                    
+                    if operator_name and operator_name not in seen_operators:
+                        seen_operators.add(operator_name)
+                        unique_operator_results.append(result)
+                
+                operator_results = unique_operator_results[:10]  # Take top 10 unique results
                 
                 for result in operator_results:
                     # Handle different result structures from hosted embeddings vs traditional search
@@ -489,6 +841,19 @@ class AlphaAnalyzer:
         
         # Start with the original expression
         improved = parsed.original
+        
+        # If improvement request mentions specific fields (like volume), incorporate them
+        if improvement_request:
+            request_lower = improvement_request.lower()
+            if "volume" in request_lower and "volume" not in [field.lower() for field in parsed.fields]:
+                # Add volume to the expression
+                improved = f"multiply({improved}, volume)"
+            elif "vwap" in request_lower and "vwap" not in [field.lower() for field in parsed.fields]:
+                # Add vwap to the expression
+                improved = f"ts_corr({improved}, vwap, 20)"
+            elif "turnover" in request_lower and "turnover" not in [field.lower() for field in parsed.fields]:
+                # Add turnover to the expression
+                improved = f"if_else(greater(turnover, ts_mean(turnover, 10)), {improved}, 0)"
         
         if improvement_request and self.vector_db:
             try:
