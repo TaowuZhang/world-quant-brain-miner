@@ -24,6 +24,10 @@ export async function POST(request: Request) {
       regular: alpha_expression
     };
 
+    // Create AbortController for timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 1500); // 1.5 second timeout
+
     const response = await fetch('https://api.worldquantbrain.com/simulations', {
       method: 'POST',
       headers: {
@@ -32,7 +36,10 @@ export async function POST(request: Request) {
         'Cookie': `t=${jwtToken}`
       },
       body: JSON.stringify(simulationData),
+      signal: controller.signal
     });
+
+    clearTimeout(timeoutId);
 
     if (response.status === 401) {
       return NextResponse.json({ error: 'Authentication expired' }, { status: 401 });
@@ -50,6 +57,15 @@ export async function POST(request: Request) {
     return NextResponse.json({ progress_url: progressUrl });
   } catch (error) {
     console.error('Error submitting simulation:', error);
+    
+    // Handle timeout errors specifically
+    if (error instanceof Error && error.name === 'AbortError') {
+      return NextResponse.json(
+        { error: 'Request timed out after 1.5 seconds' },
+        { status: 408 }
+      );
+    }
+    
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Unknown error' },
       { status: 500 }

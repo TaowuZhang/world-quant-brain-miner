@@ -1,0 +1,16 @@
+{
+  "functions": {
+    "app/api/simulations/progress/route.ts": {
+      "maxDuration": 2
+    },
+    "app/api/simulations/route.ts": {
+      "maxDuration": 2
+    }
+  },
+  "regions": ["iad1"],
+  "build": {
+    "env": {
+      "NODE_ENV": "production"
+    }
+  }
+}
