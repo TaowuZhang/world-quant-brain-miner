@@ -13,7 +13,10 @@ ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
 WORKDIR /app
 
 # Install system dependencies including Python and CUDA tools
-RUN apt-get update && apt-get install -y \
+# Use Tsinghua mirror for better network access
+RUN sed -i 's|http://archive.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list && \
+    sed -i 's|http://security.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list && \
+    apt-get update && apt-get install -y \
     python3.10 \
     python3.10-dev \
     python3-pip \

@@ -33,7 +33,7 @@ class SimulationSettings:
     region: str = "USA"
     universe: str = "TOP3000"
     instrumentType: str = "EQUITY"
-    delay: int = 1
+    delay: int = 1  # delay=0 and delay=1 provide different data fields
     decay: int = 0
     neutralization: str = "INDUSTRY"
     truncation: float = 0.08
@@ -302,7 +302,7 @@ class GeneticAlgorithm:
 class AdaptiveAlphaMiner:
     """Adaptive alpha miner using multi-arm bandit and genetic algorithm."""
     
-    def __init__(self, credentials_path: str, ollama_url: str = "http://localhost:11434", ollama_model: str = "deepseek-r1:8b"):
+    def __init__(self, credentials_path: str, ollama_url: str = "http://localhost:11434", ollama_model: str = "deepseek-r1:8b", universe: str = None):
         self.sess = requests.Session()
         self.credentials_path = credentials_path
         self.ollama_url = ollama_url
@@ -318,7 +318,17 @@ class AdaptiveAlphaMiner:
         self.best_score = 0
         self.results_history = []
         
-        # Settings variations
+        # Universe consistency - select one universe and stick with it
+        if universe:
+            self.selected_universe = universe
+            self.selected_region = self._get_region_for_universe(universe)
+            logger.info(f"Using specified universe: {self.selected_universe} in region: {self.selected_region}")
+        else:
+            self.selected_universe = self._select_universe()
+            self.selected_region = self._get_region_for_universe(self.selected_universe)
+            logger.info(f"Randomly selected universe: {self.selected_universe} in region: {self.selected_region}")
+        
+        # Settings variations - only for the selected universe
         self._initialize_settings_variations()
         
         # Load state
@@ -341,38 +351,160 @@ class AdaptiveAlphaMiner:
             raise Exception(f"Authentication failed: {response.text}")
         logger.info("Authentication successful")
     
-    def _initialize_settings_variations(self):
-        """Initialize different settings configurations for the bandit."""
-        base_settings = SimulationSettings()
-        
-        # Region variations
-        regions = ["USA", "GLB", "EUR", "ASI", "CHN"]
-        universes = {
+    def _select_universe(self) -> str:
+        """Select a random universe to use consistently throughout mining."""
+        universe_options = {
             "USA": ["TOP3000", "TOP1000", "TOP500", "TOP200", "TOPSP500"],
             "GLB": ["TOP3000", "MINVOL1M", "TOPDIV3000"],
             "EUR": ["TOP2500", "TOP1200", "TOP800", "TOP400"],
             "ASI": ["MINVOL1M"],
             "CHN": ["TOP2000U"]
         }
+        
+        # Randomly select a region first
+        region = random.choice(list(universe_options.keys()))
+        # Then randomly select a universe from that region
+        universe = random.choice(universe_options[region])
+        
+        logger.info(f"Randomly selected universe: {universe} from region: {region}")
+        return universe
+    
+    def _get_region_for_universe(self, universe: str) -> str:
+        """Get the region for a given universe."""
+        universe_to_region = {
+            "TOP3000": "USA" if universe == "TOP3000" else "GLB",
+            "TOP1000": "USA",
+            "TOP500": "USA", 
+            "TOP200": "USA",
+            "TOPSP500": "USA",
+            "MINVOL1M": "GLB" if universe == "MINVOL1M" else "ASI",
+            "TOPDIV3000": "GLB",
+            "TOP2500": "EUR",
+            "TOP1200": "EUR",
+            "TOP800": "EUR",
+            "TOP400": "EUR",
+            "TOP2000U": "CHN"
+        }
+        return universe_to_region.get(universe, "USA")
+    
+    def _get_data_fields_for_universe(self, temp_generator, delay: int = 1) -> List[Dict]:
+        """Get data fields specific to the selected universe and region with specified delay."""
+        datasets = ['fundamental6', 'fundamental2', 'analyst4', 'model16', 'model51', 'news12']
+        all_fields = []
+        
+        base_params = {
+            'delay': delay,
+            'instrumentType': 'EQUITY',
+            'limit': 20,
+            'region': self.selected_region,
+            'universe': self.selected_universe
+        }
+        
+        try:
+            logger.info(f"Requesting data fields for universe {self.selected_universe} in region {self.selected_region} with delay={delay}")
+            for dataset in datasets:
+                # First get the count
+                params = base_params.copy()
+                params['dataset.id'] = dataset
+                params['limit'] = 1  # Just to get count efficiently
+                
+                logger.info(f"Getting field count for dataset: {dataset}")
+                count_response = self.sess.get('https://api.worldquantbrain.com/data-fields', params=params)
+                
+                if count_response.status_code == 200:
+                    count_data = count_response.json()
+                    total_fields = count_data.get('count', 0)
+                    logger.info(f"Total fields in {dataset}: {total_fields}")
+                    
+                    if total_fields > 0:
+                        # Generate random offset
+                        max_offset = max(0, total_fields - base_params['limit'])
+                        random_offset = random.randint(0, max_offset)
+                        
+                        # Fetch random subset
+                        params['offset'] = random_offset
+                        params['limit'] = min(20, total_fields)  # Don't exceed total fields
+                        
+                        logger.info(f"Fetching fields for {dataset} with offset {random_offset}")
+                        response = self.sess.get('https://api.worldquantbrain.com/data-fields', params=params)
+                        
+                        if response.status_code == 200:
+                            data = response.json()
+                            fields = data.get('results', [])
+                            logger.info(f"Found {len(fields)} fields in {dataset}")
+                            all_fields.extend(fields)
+                        else:
+                            logger.warning(f"Failed to fetch fields for {dataset}: {response.text[:500]}")
+                else:
+                    logger.warning(f"Failed to get count for {dataset}: {count_response.text[:500]}")
+            
+            # Remove duplicates if any
+            unique_fields = {field['id']: field for field in all_fields}.values()
+            logger.info(f"Total unique fields found for {self.selected_universe} with delay={delay}: {len(unique_fields)}")
+            return list(unique_fields)
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch data fields for universe {self.selected_universe} with delay={delay}: {e}")
+            return []
+    
+    def _initialize_settings_variations(self):
+        """Initialize different settings configurations for the bandit using only the selected universe."""
+        base_settings = SimulationSettings()
+        
+        # Use only the selected universe and region
+        region = self.selected_region
+        universe = self.selected_universe
+        
         neutralizations = ["INDUSTRY", "SECTOR", "MARKET", "NONE", "SLOW_AND_FAST", "FAST", "SLOW"]
         truncations = [0.05, 0.08, 0.1, 0.15]
-        # Remove lookback days variations - use defaults
-        lookback_days = []
+        delays = [0, 1]  # Different delays provide different data fields
         
-        for region in regions:
-            for universe in universes.get(region, ["TOP3000"]):
-                for neutralization in neutralizations:
-                    for truncation in truncations:
+        # Add max trade settings for ASI and CHN regions
+        max_trade_options = ["OFF"]
+        if region in ["ASI", "CHN"]:
+            max_trade_options = ["ON", "OFF"]  # Enable max trade for ASI and CHN
+        
+        for delay in delays:
+            for neutralization in neutralizations:
+                for truncation in truncations:
+                    for max_trade in max_trade_options:
                         settings = SimulationSettings(
                             region=region,
                             universe=universe,
                             instrumentType="EQUITY",
+                            delay=delay,
                             neutralization=neutralization,
-                            truncation=truncation
+                            truncation=truncation,
+                            maxTrade=max_trade
                         )
                         self.bandit.add_arm(settings)
         
-        logger.info(f"Initialized {len(self.bandit.arms)} settings variations")
+        logger.info(f"Initialized {len(self.bandit.arms)} settings variations for universe {universe} in region {region}")
+        
+        # Validate that all arms use the correct universe
+        self._validate_bandit_universe_consistency()
+    
+    def _validate_bandit_universe_consistency(self):
+        """Validate that all bandit arms use the correct universe and region."""
+        inconsistent_arms = []
+        for key, arm_data in self.bandit.arms.items():
+            settings = arm_data['settings']
+            if settings.universe != self.selected_universe or settings.region != self.selected_region:
+                inconsistent_arms.append({
+                    'key': key,
+                    'universe': settings.universe,
+                    'region': settings.region,
+                    'expected_universe': self.selected_universe,
+                    'expected_region': self.selected_region
+                })
+        
+        if inconsistent_arms:
+            logger.error(f"Found {len(inconsistent_arms)} inconsistent bandit arms:")
+            for arm in inconsistent_arms:
+                logger.error(f"  Arm {arm['key']}: universe={arm['universe']}, region={arm['region']} (expected: {arm['expected_universe']}, {arm['expected_region']})")
+            raise ValueError("Bandit arms are not consistent with selected universe/region")
+        else:
+            logger.info("All bandit arms are consistent with selected universe and region")
     
     def generate_alpha_expressions(self, count: int = 10) -> List[str]:
         """Generate alpha expressions using Ollama with random combinations of data fields and operators."""
@@ -383,11 +515,22 @@ class AdaptiveAlphaMiner:
             # Create a temporary generator instance to access the APIs
             temp_generator = AlphaGenerator(self.credentials_path, self.ollama_url)
             
-            # Get data fields and operators using existing APIs
-            data_fields = temp_generator.get_data_fields()
+            # Get data fields for both delay values (0 and 1) as they provide different fields
+            data_fields_delay_0 = self._get_data_fields_for_universe(temp_generator, delay=0)
+            data_fields_delay_1 = self._get_data_fields_for_universe(temp_generator, delay=1)
+            
+            # Combine data fields from both delays, removing duplicates
+            all_data_fields = data_fields_delay_0 + data_fields_delay_1
+            unique_data_fields = {field['id']: field for field in all_data_fields}.values()
+            data_fields = list(unique_data_fields)
+            
             operators = temp_generator.get_operators()
             
-            logger.info(f"Fetched {len(data_fields)} data fields and {len(operators)} operators")
+            logger.info(f"Fetched {len(data_fields_delay_0)} fields with delay=0, {len(data_fields_delay_1)} fields with delay=1")
+            logger.info(f"Total unique data fields: {len(data_fields)} and {len(operators)} operators")
+            
+            # Set data fields for genetic algorithm
+            self.genetic_algo.set_data_fields([field['id'] for field in data_fields])
             
             # Extract field IDs and operator names with descriptions
             field_info = [(field['id'], field.get('description', 'No description')) for field in data_fields]
@@ -943,6 +1086,56 @@ Expression:"""
         
         return variations[:count]
     
+    def process_hopeful_alphas(self, hopeful_alphas_file: str = 'hopeful_alphas.json', count: int = 10) -> List[AlphaResult]:
+        """Process hopeful alphas from external file using consistent universe settings."""
+        if not os.path.exists(hopeful_alphas_file):
+            logger.warning(f"Hopeful alphas file {hopeful_alphas_file} not found")
+            return []
+        
+        try:
+            with open(hopeful_alphas_file, 'r') as f:
+                hopeful_data = json.load(f)
+            
+            # Sort by fitness and take top alphas
+            hopeful_data.sort(key=lambda x: x.get('fitness', 0), reverse=True)
+            selected_alphas = hopeful_data[:count]
+            
+            logger.info(f"Processing {len(selected_alphas)} hopeful alphas with universe {self.selected_universe}")
+            
+            results = []
+            for alpha_data in selected_alphas:
+                expression = alpha_data.get('expression', '')
+                if not expression:
+                    continue
+                
+                # Use bandit to select optimal settings for this alpha
+                settings = self.bandit.select_arm()
+                
+                # Simulate the alpha with selected settings
+                result = self.simulate_alpha(expression, settings)
+                if result and result.success:
+                    # Update bandit with reward
+                    reward = self.calculate_reward(result)
+                    self.bandit.update_reward(settings, reward)
+                    
+                    # Update best alpha if better
+                    score = result.sharpe * result.fitness
+                    if score > self.best_score:
+                        self.best_score = score
+                        self.best_alpha = result
+                        logger.info(f"Hopeful alpha became new best! Score: {score:.3f}")
+                    
+                    results.append(result)
+                    logger.info(f"Processed hopeful alpha - Sharpe: {result.sharpe:.3f}, Fitness: {result.fitness:.3f}")
+                else:
+                    logger.warning(f"Failed to simulate hopeful alpha: {expression[:50]}...")
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error processing hopeful alphas: {e}")
+            return []
+    
     def submit_best_alpha(self) -> bool:
         """Submit the best alpha found."""
         if not self.best_alpha:
@@ -987,7 +1180,9 @@ Expression:"""
             'genetic_algo': {
                 'population': self.genetic_algo.population,
                 'generation': self.genetic_algo.generation
-            }
+            },
+            'selected_universe': self.selected_universe,
+            'selected_region': self.selected_region
         }
         
         with open('adaptive_miner_state.json', 'w') as f:
@@ -1016,6 +1211,12 @@ Expression:"""
                 self.genetic_algo.population = ga_state.get('population', [])
                 self.genetic_algo.generation = ga_state.get('generation', 0)
                 
+                # Load universe information if available
+                if 'selected_universe' in state and 'selected_region' in state:
+                    self.selected_universe = state['selected_universe']
+                    self.selected_region = state['selected_region']
+                    logger.info(f"Restored universe: {self.selected_universe} in region: {self.selected_region}")
+                
                 logger.info(f"Loaded state - Best score: {self.best_score}")
                 
         except Exception as e:
@@ -1029,7 +1230,7 @@ def main():
                       help='Ollama API URL (default: http://localhost:11434)')
     parser.add_argument('--ollama-model', type=str, default='deepseek-r1:8b',
                       help='Ollama model to use (default: deepseek-r1:8b)')
-    parser.add_argument('--mode', type=str, choices=['mine', 'submit', 'lateral'],
+    parser.add_argument('--mode', type=str, choices=['mine', 'submit', 'lateral', 'hopeful'],
                       default='mine', help='Operation mode (default: mine)')
     parser.add_argument('--batch-size', type=int, default=5,
                       help='Batch size for mining (default: 5)')
@@ -1037,11 +1238,17 @@ def main():
                       help='Number of mining iterations (default: 10)')
     parser.add_argument('--lateral-count', type=int, default=5,
                       help='Number of lateral movements (default: 5)')
+    parser.add_argument('--universe', type=str, default=None,
+                      help='Specify universe to use (e.g., TOP3000, MINVOL1M, TOP2000U). If not specified, will randomly select one.')
+    parser.add_argument('--hopeful-file', type=str, default='hopeful_alphas.json',
+                      help='Path to hopeful alphas file for processing (default: hopeful_alphas.json)')
+    parser.add_argument('--hopeful-count', type=int, default=10,
+                      help='Number of hopeful alphas to process (default: 10)')
     
     args = parser.parse_args()
     
     try:
-        miner = AdaptiveAlphaMiner(args.credentials, args.ollama_url, args.ollama_model)
+        miner = AdaptiveAlphaMiner(args.credentials, args.ollama_url, args.ollama_model, args.universe)
         
         if args.mode == 'mine':
             logger.info(f"Starting adaptive mining for {args.iterations} iterations")
@@ -1082,6 +1289,11 @@ def main():
                 logger.info(f"Lateral movement complete - {len(results)} variations tested")
             else:
                 logger.warning("No best alpha found for lateral movement")
+        
+        elif args.mode == 'hopeful':
+            logger.info(f"Processing hopeful alphas from {args.hopeful_file}...")
+            results = miner.process_hopeful_alphas(args.hopeful_file, args.hopeful_count)
+            logger.info(f"Hopeful alpha processing complete - {len(results)} alphas tested")
         
     except Exception as e:
         logger.error(f"Fatal error: {e}")
