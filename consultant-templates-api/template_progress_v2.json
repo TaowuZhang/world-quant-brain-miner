@@ -1,347 +1,336 @@
 {
-  "timestamp": 1757065420.9179173,
+  "timestamp": 1757075352.1538143,
   "total_regions": 5,
-  "completed_regions": 3,
-  "total_templates": 14,
+  "completed_regions": 0,
+  "total_templates": 0,
   "completed_templates": 0,
-  "total_simulations": 14,
-  "completed_simulations": 14,
-  "successful_simulations": 5,
-  "failed_simulations": 9,
-  "current_region": "EUR",
-  "current_phase": "Simulating templates",
-  "best_sharpe": 0.0,
-  "best_template": "",
-  "results": {
-    "metadata": {
-      "generated_at": "2025-09-05 11:35:44",
-      "total_operators": 79,
-      "regions": [
-        "USA",
-        "GLB",
-        "EUR",
-        "ASI",
-        "CHN"
-      ],
-      "templates_per_region": 8,
-      "version": "2.0"
-    },
-    "templates": {
-      "USA": [
-        {
-          "region": "USA",
-          "template": "ts_zscore(ts_delta(capex, 20), 60)",
-          "operators_used": [
-            "or",
-            "ts_zscore",
-            "ts_delta",
-            "zscore"
-          ],
-          "fields_used": [
-            "capex"
-          ]
-        },
-        {
-          "region": "USA",
-          "template": "group_neutralize(ts_corr(cogs, depre_amort, 30), fnd14_03_aijd)",
-          "operators_used": [
-            "or",
-            "ts_corr",
-            "group_neutralize"
-          ],
-          "fields_used": [
-            "fnd14_03_aijd",
-            "cogs",
-            "depre_amort"
-          ]
-        },
-        {
-          "region": "USA",
-          "template": "ts_target_tvr_delta_limit(ts_arg_min(fn_amortization_of_intangible_assets_q, 40), employee, 0.1, 0.9, 0.15)",
-          "operators_used": [
-            "min",
-            "or",
-            "ts_target_tvr_delta_limit",
-            "ts_arg_min"
-          ],
-          "fields_used": [
-            "fn_amortization_of_intangible_assets_q",
-            "assets",
-            "employee"
-          ]
-        },
-        {
-          "region": "USA",
-          "template": "max(ts_min(cashflow_fin, 25), kth_element(fn_accrued_liab_q, 50, 1))",
-          "operators_used": [
-            "min",
-            "max",
-            "kth_element",
-            "ts_min"
-          ],
-          "fields_used": [
-            "fn_accrued_liab_q",
-            "cash",
-            "cashflow",
-            "cashflow_fin"
-          ]
-        },
-        {
-          "region": "USA",
-          "template": "reverse(ts_zscore(group_scale(ts_count_nans(fnd23_description, 15), fnd14_03_aijd), 30))",
-          "operators_used": [
-            "reverse",
-            "or",
-            "ts_zscore",
-            "ts_count_nans",
-            "scale",
-            "zscore",
-            "group_scale"
-          ],
-          "fields_used": [
-            "fnd14_03_aijd",
-            "fnd23_description"
-          ]
-        },
-        {
-          "region": "USA",
-          "template": "less_equal(ts_backfill(fnd14_1_vqe_hsc_hsc_slb_stl, 10, 1, \"NAN\"), group_mean(capex, employee, fnd14_03_aijd))",
-          "operators_used": [
-            "less",
-            "equal",
-            "less_equal",
-            "ts_backfill",
-            "group_mean"
-          ],
-          "fields_used": [
-            "fnd14_03_aijd",
-            "fnd14_1_vqe_hsc_hsc_slb_stl",
-            "capex",
-            "employee"
-          ]
-        },
-        {
-          "region": "USA",
-          "template": "not_equal(is_nan(fnd14_accel_filer_is_shell_company), sign(ts_delta(employee, 5)))",
-          "operators_used": [
-            "sign",
-            "not",
-            "equal",
-            "not_equal",
-            "is_nan",
-            "ts_delta"
-          ],
-          "fields_used": [
-            "fnd14_accel_filer_is_shell_company",
-            "employee"
-          ]
-        },
-        {
-          "region": "USA",
-          "template": "ts_corr(group_neutralize(ts_zscore(cogs, 45), fnd14_03_aijd), ts_delta(depre_amort, 10), 20)",
-          "operators_used": [
-            "or",
-            "ts_zscore",
-            "ts_corr",
-            "ts_delta",
-            "zscore",
-            "group_neutralize"
-          ],
-          "fields_used": [
-            "fnd14_03_aijd",
-            "cogs",
-            "depre_amort"
-          ]
-        }
-      ],
-      "GLB": [],
-      "EUR": [
-        {
-          "region": "EUR",
-          "template": "winsorize(group_neutralize(divide(cashflow_fin, debt_st), country), std=4)",
-          "operators_used": [
-            "divide",
-            "or",
-            "winsorize",
-            "group_neutralize"
-          ],
-          "fields_used": [
-            "cash",
-            "cashflow_fin",
-            "debt",
-            "debt_st"
-          ]
-        },
-        {
-          "region": "EUR",
-          "template": "trade_when(divide(assets_curr, debt), greater_equal(ts_step(1), 5), 0)",
-          "operators_used": [
-            "divide",
-            "equal",
-            "greater",
-            "greater_equal",
-            "ts_step",
-            "trade_when"
-          ],
-          "fields_used": [
-            "assets",
-            "assets_curr",
-            "debt"
-          ]
-        },
-        {
-          "region": "EUR",
-          "template": "normalize(group_min(divide(cash_st, accounts_payable), subindustry), false, 0.0)",
-          "operators_used": [
-            "min",
-            "divide",
-            "or",
-            "normalize",
-            "group_min"
-          ],
-          "fields_used": [
-            "accounts_payable",
-            "cash",
-            "cash_st"
-          ]
-        },
-        {
-          "region": "EUR",
-          "template": "last_diff_value(divide(cashflow_invst, accum_depre), 20)",
-          "operators_used": [
-            "divide",
-            "last_diff_value"
-          ],
-          "fields_used": [
-            "accum_depre",
-            "cash",
-            "cashflow_invst",
-            "depre"
-          ]
-        },
-        {
-          "region": "EUR",
-          "template": "and(not(is_nan(divide(cost_of_revenue, cogs))), less(divide(debt_lt, assets_curr_oth), 1))",
-          "operators_used": [
-            "divide",
-            "not",
-            "and",
-            "less",
-            "is_nan"
-          ],
-          "fields_used": [
-            "assets",
-            "assets_curr",
-            "assets_curr_oth",
-            "cogs",
-            "cost_of_revenue",
-            "debt",
-            "debt_lt"
-          ]
-        },
-        {
-          "region": "EUR",
-          "template": "or(greater_equal(divide(cashflow_op, depre), 0.5), less(ts_backfill(divide(assets_curr, debt), 60, 1, \"NAN\"), 2))",
-          "operators_used": [
-            "divide",
-            "less",
-            "equal",
-            "or",
-            "greater",
-            "greater_equal",
-            "ts_backfill"
-          ],
-          "fields_used": [
-            "assets",
-            "assets_curr",
-            "cash",
-            "cashflow_op",
-            "debt",
-            "depre"
-          ]
-        }
-      ]
-    },
-    "simulation_results": {
-      "USA": [
-        {
-          "template": "ts_zscore(ts_delta(capex, 20), 60)",
-          "region": "USA",
-          "sharpe": 0,
-          "fitness": 0,
-          "turnover": 0,
-          "returns": 0,
-          "drawdown": 0,
-          "margin": 0,
-          "longCount": 0,
-          "shortCount": 0,
-          "success": true,
-          "error_message": "",
-          "timestamp": 1757065171.7610574
-        }
-      ],
-      "EUR": [
-        {
-          "template": "last_diff_value(divide(cashflow_invst, accum_depre), 20)",
-          "region": "EUR",
-          "sharpe": 0,
-          "fitness": 0,
-          "turnover": 0,
-          "returns": 0,
-          "drawdown": 0,
-          "margin": 0,
-          "longCount": 0,
-          "shortCount": 0,
-          "success": true,
-          "error_message": "",
-          "timestamp": 1757065348.3644667
-        },
-        {
-          "template": "winsorize(group_neutralize(divide(cashflow_fin, debt_st), country), std=4)",
-          "region": "EUR",
-          "sharpe": 0,
-          "fitness": 0,
-          "turnover": 0,
-          "returns": 0,
-          "drawdown": 0,
-          "margin": 0,
-          "longCount": 0,
-          "shortCount": 0,
-          "success": true,
-          "error_message": "",
-          "timestamp": 1757065370.188961
-        },
-        {
-          "template": "trade_when(divide(assets_curr, debt), greater_equal(ts_step(1), 5), 0)",
-          "region": "EUR",
-          "sharpe": 0,
-          "fitness": 0,
-          "turnover": 0,
-          "returns": 0,
-          "drawdown": 0,
-          "margin": 0,
-          "longCount": 0,
-          "shortCount": 0,
-          "success": true,
-          "error_message": "",
-          "timestamp": 1757065420.248271
-        },
-        {
-          "template": "and(not(is_nan(divide(cost_of_revenue, cogs))), less(divide(debt_lt, assets_curr_oth), 1))",
-          "region": "EUR",
-          "sharpe": 0,
-          "fitness": 0,
-          "turnover": 0,
-          "returns": 0,
-          "drawdown": 0,
-          "margin": 0,
-          "longCount": 0,
-          "shortCount": 0,
-          "success": true,
-          "error_message": "",
-          "timestamp": 1757065420.8815913
-        }
-      ]
-    }
+  "total_simulations": 0,
+  "completed_simulations": 10,
+  "successful_simulations": 10,
+  "failed_simulations": 0,
+  "current_region": "",
+  "current_phase": "",
+  "best_sharpe": 0.71,
+  "best_template": "scale(winsorize(ts_av_diff(log(max(cash_st, 1) / m...",
+  "metadata": {
+    "generated_at": "2025-09-05 13:50:52",
+    "total_operators": 79,
+    "regions": [
+      "USA",
+      "GLB",
+      "EUR",
+      "ASI",
+      "CHN"
+    ],
+    "templates_per_region": 8,
+    "version": "2.0"
+  },
+  "templates": {
+    "ASI": [
+      {
+        "region": "ASI",
+        "template": "hump(scale_down(ts_arg_max(ts_mean(fnd28_bdeq_value_03255q, 60), 20), constant=0), hump=0.01)",
+        "operators_used": [
+          "max",
+          "ts_mean",
+          "hump",
+          "ts_arg_max",
+          "scale_down",
+          "scale"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "ASI",
+        "template": "hump(scale_down(ts_arg_max(ts_mean(fnd17_1_reptoprcexrate, 60), 20), constant=0), hump=0.01)",
+        "operators_used": [
+          "max",
+          "ts_mean",
+          "hump",
+          "ts_arg_max",
+          "scale_down",
+          "scale"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "ASI",
+        "template": "scale(ts_zscore(ts_covariance(star_rev_smart_estimate_12m, mdl25_8v, 60), 20), longscale=1, shortscale=1)",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_covariance",
+          "scale",
+          "zscore"
+        ],
+        "fields_used": []
+      }
+    ],
+    "EUR": [
+      {
+        "region": "EUR",
+        "template": "scale(winsorize(ts_av_diff(log(max(cash_st, 1) / max(debt_lt, 1)), 60), std=4), scale=1)",
+        "operators_used": [
+          "log",
+          "max",
+          "or",
+          "ts_av_diff",
+          "scale",
+          "winsorize"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "ts_rank(ts_zscore(ts_corr(cashflow_fin, debt_lt, 60), 20), 20)",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_corr",
+          "ts_rank",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      }
+    ],
+    "USA": [
+      {
+        "region": "USA",
+        "template": "winsorize(ts_av_diff(log(add(cashflow_op, cashflow_invst, filter=true)), 60), std=4)",
+        "operators_used": [
+          "add",
+          "log",
+          "or",
+          "ts_av_diff",
+          "winsorize"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "USA",
+        "template": "ts_rank(multiply(ts_covariance(cashflow_fin, depre_amort, 60), power(ts_mean(current_ratio, 20), 2)), 120)",
+        "operators_used": [
+          "power",
+          "multiply",
+          "or",
+          "ts_covariance",
+          "ts_mean",
+          "ts_rank",
+          "rank"
+        ],
+        "fields_used": []
+      }
+    ],
+    "GLB": [
+      {
+        "region": "GLB",
+        "template": "scale(quantile(ts_zscore(subtract(ts_mean(fnd31_devnorthamericaadditionalfactor4_apgghcy1, 20), ts_delay(fnd31_devnorthamericaadditionalfactor4_apgghcy1, 20)), 60), driver=uniform), scale=1)",
+        "operators_used": [
+          "add",
+          "subtract",
+          "or",
+          "ts_zscore",
+          "ts_mean",
+          "ts_delay",
+          "quantile",
+          "scale",
+          "zscore"
+        ],
+        "fields_used": []
+      }
+    ],
+    "CHN": [
+      {
+        "region": "CHN",
+        "template": "scale(ts_zscore(divide(mdl175_21ame, fnd5_14_af_sb), 20), longscale=1.8, shortscale=1)",
+        "operators_used": [
+          "divide",
+          "or",
+          "ts_zscore",
+          "scale",
+          "zscore"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "CHN",
+        "template": "rank(subtract(ts_zscore(mdl175_6vme, 20), group_zscore(ts_sum(mdl175_6amvt, 60), bucket(quantile(mdl39_price_mo_long_term_component, driver = gaussian, sigma = 1.0), range=\"0,1,0.2\"))))",
+        "operators_used": [
+          "subtract",
+          "or",
+          "ts_zscore",
+          "ts_sum",
+          "quantile",
+          "zscore",
+          "rank",
+          "bucket",
+          "group_zscore"
+        ],
+        "fields_used": []
+      }
+    ]
+  },
+  "simulation_results": {
+    "ASI": [
+      {
+        "template": "hump(scale_down(ts_arg_max(ts_mean(fnd28_bdeq_value_03255q, 60), 20), constant=0), hump=0.01)",
+        "region": "ASI",
+        "sharpe": 0.56,
+        "fitness": 0.17,
+        "turnover": 0.0059,
+        "returns": 0.0114,
+        "drawdown": 0.0526,
+        "margin": 0.003867,
+        "longCount": 1490,
+        "shortCount": 1156,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757073287.2719479
+      },
+      {
+        "template": "hump(scale_down(ts_arg_max(ts_mean(fnd17_1_reptoprcexrate, 60), 20), constant=0), hump=0.01)",
+        "region": "ASI",
+        "sharpe": 0.3,
+        "fitness": 0.15,
+        "turnover": 0.0077,
+        "returns": 0.0295,
+        "drawdown": 0.1712,
+        "margin": 0.007659,
+        "longCount": 2228,
+        "shortCount": 654,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757073508.6391013
+      },
+      {
+        "template": "scale(ts_zscore(ts_covariance(star_rev_smart_estimate_12m, mdl25_8v, 60), 20), longscale=1, shortscale=1)",
+        "region": "ASI",
+        "sharpe": -0.14,
+        "fitness": -0.02,
+        "turnover": 0.1071,
+        "returns": -0.0028,
+        "drawdown": 0.0759,
+        "margin": -5.1e-05,
+        "longCount": 1228,
+        "shortCount": 1224,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757074858.3502102
+      }
+    ],
+    "EUR": [
+      {
+        "template": "scale(winsorize(ts_av_diff(log(max(cash_st, 1) / max(debt_lt, 1)), 60), std=4), scale=1)",
+        "region": "EUR",
+        "sharpe": 0.71,
+        "fitness": 0.29,
+        "turnover": 0.0876,
+        "returns": 0.0211,
+        "drawdown": 0.0577,
+        "margin": 0.000481,
+        "longCount": 1438,
+        "shortCount": 1313,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757073297.3456264
+      },
+      {
+        "template": "ts_rank(ts_zscore(ts_corr(cashflow_fin, debt_lt, 60), 20), 20)",
+        "region": "EUR",
+        "sharpe": -0.2,
+        "fitness": -0.03,
+        "turnover": 0.3264,
+        "returns": -0.0099,
+        "drawdown": 0.3187,
+        "margin": -6e-05,
+        "longCount": 147,
+        "shortCount": 146,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757073319.8127968
+      }
+    ],
+    "USA": [
+      {
+        "template": "winsorize(ts_av_diff(log(add(cashflow_op, cashflow_invst, filter=true)), 60), std=4)",
+        "region": "USA",
+        "sharpe": 0.05,
+        "fitness": 0.01,
+        "turnover": 0.0855,
+        "returns": 0.0023,
+        "drawdown": 0.1603,
+        "margin": 5.4e-05,
+        "longCount": 731,
+        "shortCount": 870,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757073475.9175262
+      },
+      {
+        "template": "ts_rank(multiply(ts_covariance(cashflow_fin, depre_amort, 60), power(ts_mean(current_ratio, 20), 2)), 120)",
+        "region": "USA",
+        "sharpe": -0.27,
+        "fitness": -0.06,
+        "turnover": 0.063,
+        "returns": -0.0071,
+        "drawdown": 0.1429,
+        "margin": -0.000226,
+        "longCount": 1111,
+        "shortCount": 1109,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757073777.897414
+      }
+    ],
+    "GLB": [
+      {
+        "template": "scale(quantile(ts_zscore(subtract(ts_mean(fnd31_devnorthamericaadditionalfactor4_apgghcy1, 20), ts_delay(fnd31_devnorthamericaadditionalfactor4_apgghcy1, 20)), 60), driver=uniform), scale=1)",
+        "region": "GLB",
+        "sharpe": -0.2,
+        "fitness": -0.03,
+        "turnover": 0.1947,
+        "returns": -0.0055,
+        "drawdown": 0.1198,
+        "margin": -5.6e-05,
+        "longCount": 415,
+        "shortCount": 414,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757073808.0886967
+      }
+    ],
+    "CHN": [
+      {
+        "template": "scale(ts_zscore(divide(mdl175_21ame, fnd5_14_af_sb), 20), longscale=1.8, shortscale=1)",
+        "region": "CHN",
+        "sharpe": -2.22,
+        "fitness": -2.21,
+        "turnover": 0.2166,
+        "returns": -0.215,
+        "drawdown": 2.0903,
+        "margin": -0.001985,
+        "longCount": 843,
+        "shortCount": 931,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757075089.118616
+      },
+      {
+        "template": "rank(subtract(ts_zscore(mdl175_6vme, 20), group_zscore(ts_sum(mdl175_6amvt, 60), bucket(quantile(mdl39_price_mo_long_term_component, driver = gaussian, sigma = 1.0), range=\"0,1,0.2\"))))",
+        "region": "CHN",
+        "sharpe": -1.67,
+        "fitness": -0.95,
+        "turnover": 0.3751,
+        "returns": -0.1209,
+        "drawdown": 1.1708,
+        "margin": -0.000645,
+        "longCount": 821,
+        "shortCount": 771,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757075103.0091543
+      }
+    ]
   }
 }
