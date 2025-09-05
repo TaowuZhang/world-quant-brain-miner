@@ -107,65 +107,103 @@ class AlphaGenerator:
         except Exception as e:
             logging.warning(f"VRAM cleanup failed: {e}")
         
-    def get_data_fields(self) -> List[Dict]:
+    def get_data_fields(self, region: str = "USA", universe: str = "TOP3000") -> List[Dict]:
         """Fetch available data fields from WorldQuant Brain across multiple datasets with random sampling."""
-        datasets = ['fundamental6', 'fundamental2', 'analyst4', 'model16', 'model51', 'news12']
         all_fields = []
         
-        base_params = {
-            'delay': 1,
-            'instrumentType': 'EQUITY',
-            'limit': 20,
-            'region': 'USA',
-            'universe': 'TOP3000'
-        }
+        # Region-specific delay availability
+        # ASI and CHN regions only support delay=1 for EQUITY
+        if region in ["ASI", "CHN"]:
+            delays = [1]  # Only delay 1 for ASI/CHN
+        else:
+            delays = [0, 1]  # Both delays for other regions
         
-        try:
-            print("Requesting data fields from multiple datasets...")
-            for dataset in datasets:
-                # First get the count
-                params = base_params.copy()
-                params['dataset.id'] = dataset
-                params['limit'] = 1  # Just to get count efficiently
+        for delay in delays:
+            base_params = {
+                'delay': delay,
+                'instrumentType': 'EQUITY',
+                'limit': 20,
+                'region': region,
+                'universe': universe
+            }
+            
+            try:
+                # First, get available datasets for this region
+                datasets_params = {
+                    'category': 'fundamental',
+                    'delay': delay,
+                    'instrumentType': 'EQUITY',
+                    'region': region,
+                    'universe': universe,
+                    'limit': 50
+                }
                 
-                print(f"Getting field count for dataset: {dataset}")
-                count_response = self.sess.get('https://api.worldquantbrain.com/data-fields', params=params)
+                print(f"Getting available datasets for region {region} with delay {delay}")
+                datasets_response = self.sess.get('https://api.worldquantbrain.com/data-sets', params=datasets_params)
                 
-                if count_response.status_code == 200:
-                    count_data = count_response.json()
-                    total_fields = count_data.get('count', 0)
-                    print(f"Total fields in {dataset}: {total_fields}")
+                if datasets_response.status_code == 200:
+                    datasets_data = datasets_response.json()
+                    available_datasets = datasets_data.get('results', [])
+                    print(f"Found {len(available_datasets)} available datasets for region {region} with delay {delay}")
                     
-                    if total_fields > 0:
-                        # Generate random offset
-                        max_offset = max(0, total_fields - base_params['limit'])
-                        random_offset = random.randint(0, max_offset)
-                        
-                        # Fetch random subset
-                        params['offset'] = random_offset
-                        params['limit'] = min(20, total_fields)  # Don't exceed total fields
-                        
-                        print(f"Fetching fields for {dataset} with offset {random_offset}")
-                        response = self.sess.get('https://api.worldquantbrain.com/data-fields', params=params)
-                        
-                        if response.status_code == 200:
-                            data = response.json()
-                            fields = data.get('results', [])
-                            print(f"Found {len(fields)} fields in {dataset}")
-                            all_fields.extend(fields)
-                        else:
-                            print(f"Failed to fetch fields for {dataset}: {response.text[:500]}")
+                    # Extract dataset IDs
+                    dataset_ids = [ds.get('id') for ds in available_datasets if ds.get('id')]
+                    print(f"Available dataset IDs: {dataset_ids}")
+                    
+                    # If no datasets found, fall back to default datasets
+                    if not dataset_ids:
+                        print(f"No datasets found for region {region} with delay {delay}, using default datasets")
+                        dataset_ids = ['fundamental6', 'fundamental2', 'analyst4', 'model16', 'model51', 'news12']
                 else:
-                    print(f"Failed to get count for {dataset}: {count_response.text[:500]}")
-            
-            # Remove duplicates if any
-            unique_fields = {field['id']: field for field in all_fields}.values()
-            print(f"Total unique fields found: {len(unique_fields)}")
-            return list(unique_fields)
-            
-        except Exception as e:
-            logger.error(f"Failed to fetch data fields: {e}")
-            return []
+                    print(f"Failed to get datasets for region {region} with delay {delay}: {datasets_response.text[:500]}")
+                    # Fall back to default datasets
+                    dataset_ids = ['fundamental6', 'fundamental2', 'analyst4', 'model16', 'model51', 'news12']
+                
+                print(f"Requesting data fields from available datasets for delay {delay}...")
+                for dataset in dataset_ids:
+                    # First get the count
+                    params = base_params.copy()
+                    params['dataset.id'] = dataset
+                    params['limit'] = 1  # Just to get count efficiently
+                    
+                    print(f"Getting field count for dataset: {dataset}")
+                    count_response = self.sess.get('https://api.worldquantbrain.com/data-fields', params=params)
+                    
+                    if count_response.status_code == 200:
+                        count_data = count_response.json()
+                        total_fields = count_data.get('count', 0)
+                        print(f"Total fields in {dataset}: {total_fields}")
+                        
+                        if total_fields > 0:
+                            # Generate random offset
+                            max_offset = max(0, total_fields - base_params['limit'])
+                            random_offset = random.randint(0, max_offset)
+                            
+                            # Fetch random subset
+                            params['offset'] = random_offset
+                            params['limit'] = min(20, total_fields)  # Don't exceed total fields
+                            
+                            print(f"Fetching fields for {dataset} with offset {random_offset}")
+                            response = self.sess.get('https://api.worldquantbrain.com/data-fields', params=params)
+                            
+                            if response.status_code == 200:
+                                data = response.json()
+                                fields = data.get('results', [])
+                                print(f"Found {len(fields)} fields in {dataset}")
+                                all_fields.extend(fields)
+                            else:
+                                print(f"Failed to fetch fields for {dataset}: {response.text[:500]}")
+                    else:
+                        print(f"Failed to get count for {dataset}: {count_response.text[:500]}")
+                        
+            except Exception as e:
+                logger.error(f"Failed to fetch data fields for delay {delay}: {e}")
+                continue
+        
+        # Remove duplicates if any
+        unique_fields = {field['id']: field for field in all_fields}.values()
+        print(f"Total unique fields found: {len(unique_fields)}")
+        return list(unique_fields)
 
     def get_operators(self) -> List[Dict]:
         """Fetch available operators from WorldQuant Brain."""
@@ -209,6 +247,38 @@ class AlphaGenerator:
             cleaned_ideas.append(idea)  # Just append the expression string
         
         return cleaned_ideas
+
+    def _fix_expression_syntax(self, expression: str) -> str:
+        """Fix common syntax issues in alpha expressions."""
+        import re
+        
+        # Fix array brackets [20] -> 20
+        expression = re.sub(r'\[(\d+)\]', r'\1', expression)
+        
+        # Fix multiple parameters in brackets [25, 60] -> 25 (take first parameter)
+        expression = re.sub(r'\[(\d+),\s*\d+\]', r'\1', expression)
+        
+        # Fix any remaining array syntax
+        expression = re.sub(r'\[([^\]]+)\]', r'\1', expression)
+        
+        # Fix common operator syntax issues
+        expression = expression.replace('ts_std_dev', 'ts_stddev')
+        expression = expression.replace('ts_stddev', 'ts_std_dev')
+        
+        # Remove any trailing commas
+        expression = re.sub(r',\s*\)', ')', expression)
+        
+        # Fix named parameters like lookback_days=90 -> 90
+        expression = re.sub(r'lookback_days=(\d+)', r'\1', expression)
+        expression = re.sub(r'lambda_max=(\d+)', r'\1', expression)
+        expression = re.sub(r'window=(\d+)', r'\1', expression)
+        expression = re.sub(r'period=(\d+)', r'\1', expression)
+        
+        # Fix missing commas between parameters
+        # Pattern: field1 field2 number) -> field1, field2, number)
+        expression = re.sub(r'(\w+)\s+(\w+)\s+(\d+)\)', r'\1, \2, \3)', expression)
+        
+        return expression.strip()
 
     def generate_alpha_ideas_with_ollama(self, data_fields: List[Dict], operators: List[Dict]) -> List[str]:
         """Generate alpha ideas using Ollama with FinGPT model."""
@@ -259,11 +329,14 @@ class AlphaGenerator:
 Fields: {fields_formatted}
 Operators: {operators_formatted}
 
-Rules:
+CRITICAL SYNTAX RULES:
 1. Use only provided fields and operators
 2. Return ONLY expressions, one per line
 3. No text, no explanations
-4. Use the descriptions to understand how each component works
+4. CORRECT syntax: operator(field_id, number) - use numbers like 20, 60, NOT [20] or [60]
+5. WRONG: ts_std_dev(field, [20]) 
+6. CORRECT: ts_std_dev(field, 20)
+7. Use the descriptions to understand how each component works
 
 Example: ts_rank(act_12m_eps_value, 60)
 
@@ -362,6 +435,8 @@ Generate 100 expressions:"""
                 
                 # Only keep lines that look like actual expressions (contain parentheses and operators)
                 if line and '(' in line and ')' in line and any(op in line for op in ['ts_', 'rank', 'divide', 'multiply', 'add', 'subtract', 'winsorize']):
+                    # Fix common syntax issues
+                    line = self._fix_expression_syntax(line)
                     alpha_ideas.append(line)
             
             print(f"Generated {len(alpha_ideas)} alpha ideas")
