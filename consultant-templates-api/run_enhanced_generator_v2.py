@@ -13,11 +13,14 @@ import json
 import time
 from dotenv import load_dotenv
 
+# Note: Unicode handling is now managed by the SafeStreamHandler in enhanced_template_generator_v2.py
+
 # Load environment variables from .env file
 load_dotenv()
 
 def main():
-    # Check if credentials file exists
+    # C
+    # eck if credentials file exists
     if not os.path.exists('credential.txt'):
         print("Error: credential.txt file not found!")
         print("Please create a credential.txt file with your WorldQuant Brain credentials in JSON format:")
@@ -33,7 +36,9 @@ def main():
         return 1
     
     try:
-        print("🚀 Starting Enhanced Template Generator v2 with Multi-Simulation Testing...")
+        print("🚀 Starting Enhanced Template Generator v2 with Continuous Multi-Arm Bandit...")
+        print("🔄 This will run indefinitely using explore/exploit strategy")
+        print("💡 Use Ctrl+C to stop gracefully")
         print("=" * 80)
         
         # Check for existing progress
@@ -75,7 +80,7 @@ def main():
         print("📈 Progress will be displayed dynamically below:")
         print()
         
-        results = generator.generate_and_test_templates(regions, templates_per_region, resume)
+        results = generator.generate_and_test_templates(regions, templates_per_region, resume, max_iterations=None)
         
         # Save final results
         generator.save_results(results, results_file)

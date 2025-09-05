@@ -21,3 +21,6 @@ credential.txt
 *.log
 .env
 *batch_*.html
+
+data_fields_cache_*.json
+*v2.json

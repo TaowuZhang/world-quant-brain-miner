@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Enhanced Template Generator v2 with Multi-Simulation Testing
-- Improved template quality validation
-- Progress saving and resume functionality
-- Dynamic result display
-- Better error handling and field validation
+Enhanced Template Generator v2 with TRUE CONCURRENT Subprocess Execution
+- NO HTML generation - completely removed
+- TRUE concurrent subprocess execution using ThreadPoolExecutor
+- Smart plan for 8 concurrent slots: [explore, exploit, explore, exploit, explore, exploit, explore, exploit]
+- Only save successful simulations, discard failures
+- Continuous operation with multi-arm bandit
 """
 
 import argparse
@@ -18,20 +19,65 @@ from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass, asdict
 from requests.auth import HTTPBasicAuth
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 import numpy as np
 from datetime import datetime
 import threading
 import sys
 import math
+import subprocess
+
+# Configure logging with UTF-8 encoding to handle Unicode characters
+import io
+import codecs
+
+# Create a safe stream handler that handles Unicode errors gracefully
+class SafeStreamHandler(logging.StreamHandler):
+    def __init__(self, stream=None):
+        super().__init__(stream)
+    
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            # Try to write the message
+            self.stream.write(msg + self.terminator)
+            self.flush()
+        except UnicodeEncodeError:
+            # If Unicode error, replace problematic characters
+            try:
+                msg = self.format(record)
+                # Replace Unicode emojis with ASCII equivalents
+                msg = msg.replace('📊', '[CHART]')
+                msg = msg.replace('🔄', '[REFRESH]')
+                msg = msg.replace('❌', '[FAIL]')
+                msg = msg.replace('✅', '[SUCCESS]')
+                msg = msg.replace('💡', '[INFO]')
+                msg = msg.replace('🎯', '[TARGET]')
+                msg = msg.replace('📈', '[TREND]')
+                msg = msg.replace('🏆', '[TROPHY]')
+                msg = msg.replace('⚠️', '[WARNING]')
+                msg = msg.replace('💾', '[SAVE]')
+                msg = msg.replace('🛑', '[STOP]')
+                msg = msg.replace('🔍', '[SEARCH]')
+                msg = msg.replace('🗑️', '[DELETE]')
+                msg = msg.replace('🚀', '[ROCKET]')
+                msg = msg.replace('🌍', '[GLOBE]')
+                self.stream.write(msg + self.terminator)
+                self.flush()
+            except Exception:
+                # If all else fails, just write a simple message
+                self.stream.write(f"Log message: {record.getMessage()}\n")
+                self.flush()
+        except Exception:
+            self.handleError(record)
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('enhanced_template_generator_v2.log')
+        SafeStreamHandler(sys.stdout),
+        logging.FileHandler('enhanced_template_generator_v2.log', encoding='utf-8')
     ]
 )
 logger = logging.getLogger(__name__)
@@ -224,17 +270,29 @@ class ProgressTracker:
         sys.stdout.flush()
 
 class EnhancedTemplateGeneratorV2:
-    def __init__(self, credentials_path: str, deepseek_api_key: str, max_concurrent: int = 5, 
-                 progress_file: str = "template_progress.json", results_file: str = "enhanced_results.json"):
-        """Initialize the enhanced template generator with multi-simulation capabilities"""
+    def __init__(self, credentials_path: str, deepseek_api_key: str, max_concurrent: int = 8, 
+                 progress_file: str = "template_progress_v2.json", results_file: str = "enhanced_results_v2.json"):
+        """Initialize the enhanced template generator with TRUE CONCURRENT subprocess execution"""
         self.sess = requests.Session()
         self.credentials_path = credentials_path
         self.deepseek_api_key = deepseek_api_key
-        self.max_concurrent = max_concurrent
+        self.max_concurrent = min(max_concurrent, 8)  # WorldQuant Brain limit is 8
         self.progress_file = progress_file
         self.results_file = results_file
         self.progress_tracker = ProgressTracker()
         self.bandit = MultiArmBandit(exploration_rate=0.3)
+        
+        # TRUE CONCURRENT execution using ThreadPoolExecutor
+        self.executor = ThreadPoolExecutor(max_workers=self.max_concurrent)
+        self.active_futures = {}  # Track active Future objects
+        self.completed_count = 0
+        self.successful_count = 0
+        self.failed_count = 0
+        
+        # Smart plan for 8 concurrent slots: [explore, exploit, explore, exploit, explore, exploit, explore, exploit]
+        self.slot_plans = ['explore', 'exploit', 'explore', 'exploit', 'explore', 'exploit', 'explore', 'exploit']
+        self.slot_plan_index = 0
+        
         self.setup_auth()
         
         # Region configurations with pyramid multipliers
@@ -245,6 +303,9 @@ class EnhancedTemplateGeneratorV2:
             "ASI": RegionConfig("ASI", "MINVOL1M", 1, max_trade=True),
             "CHN": RegionConfig("CHN", "TOP2000U", 1, max_trade=True)
         }
+        
+        # Define regions list
+        self.regions = list(self.region_configs.keys())
         
         # Pyramid theme multipliers (delay=0, delay=1) for each region
         self.pyramid_multipliers = {
@@ -259,6 +320,10 @@ class EnhancedTemplateGeneratorV2:
         self.operators = self.load_operators()
         self.data_fields = {}
         
+        # Error learning system - store failure patterns per region
+        self.failure_patterns = {}  # {region: [{'template': str, 'error': str, 'timestamp': float}]}
+        self.max_failures_per_region = 10  # Keep last 10 failures per region
+        
         # Results storage
         self.template_results = []
         self.all_results = {
@@ -272,6 +337,9 @@ class EnhancedTemplateGeneratorV2:
             'templates': {},
             'simulation_results': {}
         }
+        
+        # Load previous progress if it exists (for exploit data)
+        self.load_progress()
     
     def select_optimal_delay(self, region: str) -> int:
         """Select delay based on pyramid multipliers and region constraints"""
@@ -379,38 +447,72 @@ class EnhancedTemplateGeneratorV2:
             logger.error(f"Failed to load operators: {e}")
             return []
     
+    def record_failure(self, region: str, template: str, error_message: str):
+        """Record a failed template attempt for learning purposes"""
+        if region not in self.failure_patterns:
+            self.failure_patterns[region] = []
+        
+        failure_record = {
+            'template': template,
+            'error': error_message,
+            'timestamp': time.time()
+        }
+        
+        self.failure_patterns[region].append(failure_record)
+        
+        # Keep only the most recent failures
+        if len(self.failure_patterns[region]) > self.max_failures_per_region:
+            self.failure_patterns[region] = self.failure_patterns[region][-self.max_failures_per_region:]
+        
+        logger.info(f"📚 Recorded failure for {region}: {template[:50]}... - {error_message}")
+    
+    def get_failure_guidance(self, region: str) -> str:
+        """Get failure guidance text for LLM prompts"""
+        if region not in self.failure_patterns or not self.failure_patterns[region]:
+            return ""
+        
+        recent_failures = self.failure_patterns[region][-5:]  # Last 5 failures
+        if not recent_failures:
+            return ""
+        
+        failure_guidance = f"""
+
+PREVIOUS FAILURES TO AVOID:
+{chr(10).join([f"- FAILED: {failure['template'][:60]}... ERROR: {failure['error']}" for failure in recent_failures])}
+
+LEARN FROM THESE MISTAKES:
+- Do NOT repeat the same error patterns
+- Check operator parameter requirements carefully
+- Ensure proper syntax and field names
+- Avoid invalid parameter combinations
+- Pay attention to the specific error messages above
+"""
+        return failure_guidance
+    
     def get_data_fields_for_region(self, region: str, delay: int = 1) -> List[Dict]:
-        """Get data fields for a specific region and delay"""
+        """Get data fields for a specific region and delay with local caching"""
         try:
+            # Check if we have cached data fields
+            cache_key = f"{region}_{delay}"
+            cache_file = f"data_fields_cache_{cache_key}.json"
+            
+            if os.path.exists(cache_file):
+                logger.info(f"Loading cached data fields for {region} delay={delay}")
+                with open(cache_file, 'r') as f:
+                    cached_data = json.load(f)
+                    logger.info(f"Loaded {len(cached_data)} cached fields for {region} delay={delay}")
+                    return cached_data
+            
+            logger.info(f"No cache found for {region} delay={delay}, fetching from API...")
             config = self.region_configs[region]
             
-            # First get available datasets
-            datasets_params = {
-                'category': 'fundamental',
-                'delay': delay,
-                'instrumentType': 'EQUITY',
-                'region': region,
-                'universe': config.universe,
-                'limit': 50
-            }
+            # First get available datasets from multiple categories
+            categories = ['fundamental', 'analyst', 'model', 'news', 'alternative']
+            all_dataset_ids = []
             
-            logger.info(f"Getting datasets for region {region}")
-            datasets_response = self.sess.get('https://api.worldquantbrain.com/data-sets', params=datasets_params)
-            
-            if datasets_response.status_code == 200:
-                datasets_data = datasets_response.json()
-                available_datasets = datasets_data.get('results', [])
-                dataset_ids = [ds.get('id') for ds in available_datasets if ds.get('id')]
-                logger.info(f"Found {len(dataset_ids)} datasets for region {region}")
-            else:
-                logger.warning(f"Failed to get datasets for region {region}")
-                dataset_ids = ['fundamental6', 'fundamental2', 'analyst4', 'model16', 'model51', 'news12']
-            
-            # Get fields from datasets
-            all_fields = []
-            for dataset in dataset_ids[:5]:  # Limit to first 5 datasets
-                params = {
-                    'dataset.id': dataset,
+            for category in categories:
+                datasets_params = {
+                    'category': category,
                     'delay': delay,
                     'instrumentType': 'EQUITY',
                     'region': region,
@@ -418,21 +520,118 @@ class EnhancedTemplateGeneratorV2:
                     'limit': 20
                 }
                 
-                response = self.sess.get('https://api.worldquantbrain.com/data-fields', params=params)
-                if response.status_code == 200:
-                    data = response.json()
-                    fields = data.get('results', [])
-                    all_fields.extend(fields)
-                    logger.info(f"Found {len(fields)} fields in dataset {dataset}")
+                logger.info(f"Getting {category} datasets for region {region}")
+                datasets_response = self.sess.get('https://api.worldquantbrain.com/data-sets', params=datasets_params)
+                
+                if datasets_response.status_code == 200:
+                    datasets_data = datasets_response.json()
+                    available_datasets = datasets_data.get('results', [])
+                    category_dataset_ids = [ds.get('id') for ds in available_datasets if ds.get('id')]
+                    all_dataset_ids.extend(category_dataset_ids)
+                    logger.info(f"Found {len(category_dataset_ids)} {category} datasets for region {region}")
+                else:
+                    logger.warning(f"Failed to get {category} datasets for region {region}")
+            
+            # Remove duplicates and use the combined list
+            dataset_ids = list(set(all_dataset_ids))
+            
+            if not dataset_ids:
+                logger.warning(f"No datasets found for region {region}, using fallback datasets")
+                dataset_ids = ['fundamental6', 'fundamental2', 'analyst4', 'model16', 'model51', 'news12']
+            
+            logger.info(f"Total unique datasets for region {region}: {len(dataset_ids)}")
+            
+            # Get fields from datasets with pagination
+            all_fields = []
+            max_datasets = min(10, len(dataset_ids))  # Use up to 10 datasets
+            
+            for dataset in dataset_ids[:max_datasets]:
+                dataset_fields = []
+                page = 1
+                max_pages = 5  # Get up to 5 pages per dataset
+                
+                while page <= max_pages:
+                    params = {
+                        'dataset.id': dataset,
+                        'delay': delay,
+                        'instrumentType': 'EQUITY',
+                        'region': region,
+                        'universe': config.universe,
+                        'limit': 50,  # Increased from 20 to 50 per page
+                        'page': page
+                    }
+                    
+                    response = self.sess.get('https://api.worldquantbrain.com/data-fields', params=params)
+                    if response.status_code == 200:
+                        data = response.json()
+                        fields = data.get('results', [])
+                        if not fields:  # No more fields on this page
+                            break
+                        dataset_fields.extend(fields)
+                        logger.info(f"Found {len(fields)} fields in dataset {dataset} page {page}")
+                        page += 1
+                    else:
+                        logger.warning(f"Failed to get fields from dataset {dataset} page {page}")
+                        break
+                
+                all_fields.extend(dataset_fields)
+                logger.info(f"Total fields from dataset {dataset}: {len(dataset_fields)}")
             
             # Remove duplicates
             unique_fields = {field['id']: field for field in all_fields}.values()
-            logger.info(f"Total unique fields for region {region}: {len(unique_fields)}")
-            return list(unique_fields)
+            field_list = list(unique_fields)
+            logger.info(f"Total unique fields for region {region}: {len(field_list)} (from {max_datasets} datasets)")
+            
+            # Cache the fetched data
+            try:
+                with open(cache_file, 'w') as f:
+                    json.dump(field_list, f, indent=2)
+                logger.info(f"Cached {len(field_list)} fields to {cache_file}")
+            except Exception as cache_error:
+                logger.warning(f"Failed to cache data fields: {cache_error}")
+            
+            return field_list
             
         except Exception as e:
             logger.error(f"Failed to get data fields for region {region}: {e}")
             return []
+    
+    def clear_data_fields_cache(self, region: str = None, delay: int = None):
+        """Clear cached data fields for a specific region/delay or all caches"""
+        import glob
+        
+        if region and delay is not None:
+            # Clear specific cache
+            cache_file = f"data_fields_cache_{region}_{delay}.json"
+            if os.path.exists(cache_file):
+                os.remove(cache_file)
+                logger.info(f"Cleared cache file: {cache_file}")
+            else:
+                logger.info(f"Cache file not found: {cache_file}")
+        else:
+            # Clear all cache files
+            cache_files = glob.glob("data_fields_cache_*.json")
+            for cache_file in cache_files:
+                os.remove(cache_file)
+                logger.info(f"Cleared cache file: {cache_file}")
+            logger.info(f"Cleared {len(cache_files)} cache files")
+    
+    def get_cache_info(self):
+        """Get information about cached data fields"""
+        import glob
+        
+        cache_files = glob.glob("data_fields_cache_*.json")
+        cache_info = {}
+        
+        for cache_file in cache_files:
+            try:
+                with open(cache_file, 'r') as f:
+                    data = json.load(f)
+                    cache_info[cache_file] = len(data)
+            except Exception as e:
+                cache_info[cache_file] = f"Error: {e}"
+        
+        return cache_info
     
     def validate_template_syntax(self, template: str, valid_fields: List[str]) -> Tuple[bool, str]:
         """Validate template syntax and field usage - more lenient approach"""
@@ -552,6 +751,30 @@ class EnhancedTemplateGeneratorV2:
         
         return None
     
+    def generate_templates_for_region_with_retry(self, region: str, num_templates: int = 1, max_retries: int = 5) -> List[Dict]:
+        """Generate templates with retry logic and error learning"""
+        for attempt in range(max_retries):
+            logger.info(f"🔄 Template generation attempt {attempt + 1}/{max_retries} for {region}")
+            
+            templates = self.generate_templates_for_region(region, num_templates)
+            
+            if templates:
+                logger.info(f"✅ Successfully generated {len(templates)} templates for {region} on attempt {attempt + 1}")
+                return templates
+            else:
+                logger.warning(f"❌ Template generation failed for {region} on attempt {attempt + 1}")
+                
+                if attempt < max_retries - 1:
+                    # Record the failure for learning (we don't have a specific template, so record a generic failure)
+                    self.record_failure(region, "Template generation failed", f"Attempt {attempt + 1} - No valid templates generated")
+                    logger.info(f"📚 Recorded failure for learning. Retrying in 2 seconds...")
+                    time.sleep(2)
+                else:
+                    logger.error(f"🚫 All {max_retries} attempts failed for {region}. Discarding this attempt.")
+                    self.record_failure(region, "All attempts failed", f"Failed after {max_retries} attempts")
+        
+        return []  # Return empty list if all attempts failed
+    
     def generate_templates_for_region(self, region: str, num_templates: int = 10) -> List[Dict]:
         """Generate templates for a specific region with validation"""
         logger.info(f"Generating {num_templates} templates for region: {region}")
@@ -597,21 +820,7 @@ class EnhancedTemplateGeneratorV2:
                 parameter_guidelines.append("- 'filter' parameters should be true/false")
         
         # Add failure patterns to help LLM learn
-        failure_guidance = ""
-        if hasattr(self, 'failure_patterns') and region in self.failure_patterns:
-            recent_failures = self.failure_patterns[region][-5:]  # Last 5 failures
-            if recent_failures:
-                failure_guidance = f"""
-
-PREVIOUS FAILURES TO AVOID:
-{chr(10).join([f"- FAILED: {failure['template'][:60]}... ERROR: {failure['error']}" for failure in recent_failures])}
-
-LEARN FROM THESE MISTAKES:
-- Do NOT repeat the same error patterns
-- Check operator parameter requirements carefully
-- Ensure proper syntax and field names
-- Avoid invalid parameter combinations
-"""
+        failure_guidance = self.get_failure_guidance(region)
 
         prompt = f"""Generate {num_templates} diverse and creative WorldQuant Brain alpha expression templates for the {region} region.
 
@@ -685,38 +894,89 @@ Generate {num_templates} templates:"""
                         logger.warning(f"Invalid template rejected: {template[:50]}... - {error_msg}")
         
         logger.info(f"Generated {len(templates)} valid templates for region {region}")
+        
+        # Note: Templates are NOT saved to templates section here
+        # They will only be saved after successful simulation in _add_to_results()
+        
         return templates
     
-    def decide_next_action(self, region: str, existing_templates: List[Dict], simulation_results: List[TemplateResult]) -> Tuple[str, str]:
+    def decide_next_action(self):
         """
-        Use multi-arm bandit to decide whether to explore new templates or exploit existing ones
-        Returns: (action, arm_id)
+        Use multi-arm bandit to decide next action: explore new template or exploit existing one
+        Returns: dict with action details
         """
-        # Create arm IDs based on template patterns
-        available_arms = []
-        for template in existing_templates:
-            # Create arm ID based on main operator pattern
-            main_ops = template.get('operators_used', [])
-            if main_ops:
-                arm_id = f"{region}_{main_ops[0]}"  # Use first operator as arm identifier
-                available_arms.append(arm_id)
+        # Get all successful templates from all regions
+        all_successful_templates = []
+        for region, results in self.all_results.get('simulation_results', {}).items():
+            for result in results:
+                if result.get('success', False):
+                    all_successful_templates.append({
+                        'template': result,
+                        'region': region,
+                        'sharpe': result.get('sharpe', 0)
+                    })
         
-        # Update bandit with successful simulation results only
-        for result in simulation_results:
-            if result.success:
-                # Create arm ID for this result
-                template_ops = self.extract_operators_from_template(result.template)
-                if template_ops:
-                    arm_id = f"{region}_{template_ops[0]}"
-                    # Use fitness as reward (normalized to 0-1)
-                    reward = min(1.0, max(0.0, result.fitness))
-                    self.bandit.update_arm(arm_id, reward)
-                    logger.info(f"Bandit updated: {arm_id} -> reward: {reward:.3f}")
+        # Decide between explore and exploit
+        if len(all_successful_templates) < 3:  # Need at least 3 successful templates to start exploiting
+            # Explore: generate new template
+            region = self.select_region_by_pyramid()
+            delay = self.select_optimal_delay(region)
+            return {
+                'type': 'explore_new_template',
+                'region': region,
+                'delay': delay,
+                'reason': 'insufficient_successful_templates'
+            }
+        else:
+            # Use bandit to decide between explore and exploit
+            explore_prob = 0.3  # 30% chance to explore, 70% to exploit
+            
+            if random.random() < explore_prob:
+                # Explore: generate new template
+                region = self.select_region_by_pyramid()
+                delay = self.select_optimal_delay(region)
+                return {
+                    'type': 'explore_new_template',
+                    'region': region,
+                    'delay': delay,
+                    'reason': 'bandit_exploration'
+                }
+            else:
+                # Exploit: use existing successful template
+                # Select best template based on sharpe ratio
+                best_template = max(all_successful_templates, key=lambda x: x['sharpe'])
+                region = best_template['region']
+                delay = self.select_optimal_delay(region)
+                return {
+                    'type': 'exploit_existing_template',
+                    'template': best_template['template'],
+                    'region': region,
+                    'delay': delay,
+                    'reason': 'bandit_exploitation'
+                }
+    
+    def select_region_by_pyramid(self):
+        """Select region based on pyramid multipliers"""
+        # Calculate weights based on pyramid multipliers
+        region_weights = {}
+        for region in self.regions:
+            delay = self.select_optimal_delay(region)
+            multiplier = self.pyramid_multipliers.get(region, {}).get(delay, 1.0)
+            region_weights[region] = multiplier
         
-        # Choose action
-        action, arm_id = self.bandit.choose_action(available_arms)
-        logger.info(f"Bandit decision for {region}: {action} (arm: {arm_id})")
-        return action, arm_id
+        # Weighted random selection
+        total_weight = sum(region_weights.values())
+        if total_weight == 0:
+            return random.choice(self.regions)
+        
+        rand = random.random() * total_weight
+        cumulative = 0
+        for region, weight in region_weights.items():
+            cumulative += weight
+            if rand <= cumulative:
+                return region
+        
+        return random.choice(self.regions)
     
     def extract_operators_from_template(self, template: str) -> List[str]:
         """Extract operator names from a template"""
@@ -751,7 +1011,10 @@ Generate {num_templates} templates:"""
                 'current_phase': self.progress_tracker.current_phase,
                 'best_sharpe': self.progress_tracker.best_sharpe,
                 'best_template': self.progress_tracker.best_template,
-                'results': self.all_results
+                # Save the all_results structure directly (not wrapped in 'results')
+                'metadata': self.all_results.get('metadata', {}),
+                'templates': self.all_results.get('templates', {}),
+                'simulation_results': self.all_results.get('simulation_results', {})
             }
             
             with open(self.progress_file, 'w') as f:
@@ -779,13 +1042,32 @@ Generate {num_templates} templates:"""
                 self.progress_tracker.best_sharpe = progress_data.get('best_sharpe', 0.0)
                 self.progress_tracker.best_template = progress_data.get('best_template', "")
                 
-                # Restore results
-                self.all_results = progress_data.get('results', self.all_results)
+                # Restore results - handle both old and new format
+                if 'results' in progress_data:
+                    # Old format: results wrapped in 'results' key
+                    self.all_results = progress_data.get('results', self.all_results)
+                else:
+                    # New format: direct structure
+                    self.all_results = {
+                        'metadata': progress_data.get('metadata', {}),
+                        'templates': progress_data.get('templates', {}),
+                        'simulation_results': progress_data.get('simulation_results', {})
+                    }
+                
+                # Debug: Check if results were loaded
+                total_simulations = 0
+                successful_simulations = 0
+                for region, results in self.all_results.get('simulation_results', {}).items():
+                    total_simulations += len(results)
+                    successful_simulations += len([r for r in results if r.get('success', False)])
                 
                 logger.info(f"Progress loaded from {self.progress_file}")
+                logger.info(f"📊 Loaded {total_simulations} total simulations, {successful_simulations} successful")
                 return True
         except Exception as e:
             logger.error(f"Failed to load progress: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
         return False
     
     def multi_simulate_templates(self, templates: List[Dict], region: str, delay: int = None) -> List[TemplateResult]:
@@ -902,30 +1184,97 @@ Generate {num_templates} templates:"""
                         
                         if status == 'COMPLETE':
                             template_data = template_mapping[progress_url]
-                            is_data = data.get('is', {})
+                            
+                            # Get the alphaId from the simulation response
+                            alpha_id = data.get('alpha')
+                            if not alpha_id:
+                                logger.error(f"No alphaId in completed simulation response for {template_data['template'][:50]}...")
+                                result = TemplateResult(
+                                    template=template_data['template'],
+                                    region=template_data['region'],
+                                    settings=settings,
+                                    success=False,
+                                    error_message="No alphaId in simulation response",
+                                    timestamp=time.time()
+                                )
+                                results.append(result)
+                                completed_urls.append(progress_url)
+                                continue
+                            
+                            # Fetch the alpha data using the alphaId
+                            logger.info(f"Simulation complete, fetching alpha {alpha_id} for {template_data['template'][:50]}...")
+                            alpha_response = self.sess.get(f'https://api.worldquantbrain.com/alphas/{alpha_id}')
+                            
+                            if alpha_response.status_code != 200:
+                                logger.error(f"Failed to fetch alpha {alpha_id}: {alpha_response.status_code}")
+                                result = TemplateResult(
+                                    template=template_data['template'],
+                                    region=template_data['region'],
+                                    settings=settings,
+                                    success=False,
+                                    error_message=f"Failed to fetch alpha: {alpha_response.status_code}",
+                                    timestamp=time.time()
+                                )
+                                results.append(result)
+                                completed_urls.append(progress_url)
+                                continue
+                            
+                            alpha_data = alpha_response.json()
+                            is_data = alpha_data.get('is', {})
+                            
+                            # Extract metrics from the alpha data
+                            sharpe = is_data.get('sharpe', 0)
+                            fitness = is_data.get('fitness', 0)
+                            turnover = is_data.get('turnover', 0)
+                            returns = is_data.get('returns', 0)
+                            drawdown = is_data.get('drawdown', 0)
+                            margin = is_data.get('margin', 0)
+                            longCount = is_data.get('longCount', 0)
+                            shortCount = is_data.get('shortCount', 0)
+                            
+                            # A simulation is successful if it completed and has meaningful metrics
+                            # Check if we have at least some non-zero performance indicators
+                            has_meaningful_metrics = (
+                                sharpe != 0 or  # Non-zero Sharpe ratio
+                                (fitness is not None and fitness != 0) or  # Non-zero fitness
+                                turnover != 0 or  # Non-zero turnover
+                                returns != 0 or  # Non-zero returns
+                                longCount > 0 or  # Has long positions
+                                shortCount > 0  # Has short positions
+                            )
+                            
+                            is_truly_successful = has_meaningful_metrics
                             
                             result = TemplateResult(
                                 template=template_data['template'],
                                 region=template_data['region'],
                                 settings=settings,
-                                sharpe=is_data.get('sharpe', 0),
-                                fitness=is_data.get('fitness', 0),
-                                turnover=is_data.get('turnover', 0),
-                                returns=is_data.get('returns', 0),
-                                drawdown=is_data.get('drawdown', 0),
-                                margin=is_data.get('margin', 0),
-                                longCount=is_data.get('longCount', 0),
-                                shortCount=is_data.get('shortCount', 0),
-                                success=True,
+                                sharpe=sharpe,
+                                fitness=fitness if fitness is not None else 0,
+                                turnover=turnover,
+                                returns=returns,
+                                drawdown=drawdown,
+                                margin=margin,
+                                longCount=longCount,
+                                shortCount=shortCount,
+                                success=is_truly_successful,
                                 timestamp=time.time()
                             )
                             results.append(result)
                             completed_urls.append(progress_url)
                             
                             # Update progress tracker
-                            self.progress_tracker.update_simulation_progress(True, result.sharpe, result.template)
+                            self.progress_tracker.update_simulation_progress(is_truly_successful, result.sharpe, result.template)
                             
-                            logger.info(f"Template simulation completed successfully: {template_data['template'][:50]}...")
+                            if is_truly_successful:
+                                logger.info(f"✅ Template simulation completed successfully: {template_data['template'][:50]}...")
+                                logger.info(f"📊 Alpha {alpha_id} Performance: Sharpe={sharpe}, Fitness={fitness}, Turnover={turnover}, Returns={returns}")
+                                logger.info(f"📊 Alpha {alpha_id} Positions: Long={longCount}, Short={shortCount}")
+                            else:
+                                logger.info(f"⚠️ Template simulation completed but with zero/meaningless values: {template_data['template'][:50]}...")
+                                logger.info(f"📊 Alpha {alpha_id} Values: Sharpe={sharpe}, Fitness={fitness}, Turnover={turnover}, Returns={returns}")
+                                logger.info(f"📊 Alpha {alpha_id} Positions: Long={longCount}, Short={shortCount}")
+                                logger.info(f"📊 Alpha {alpha_id} Success criteria: has_meaningful_metrics={has_meaningful_metrics}")
                             
                         elif status in ['FAILED', 'ERROR']:
                             template_data = template_mapping[progress_url]
@@ -966,153 +1315,662 @@ Generate {num_templates} templates:"""
         
         return results
     
-    def generate_and_test_templates(self, regions: List[str] = None, templates_per_region: int = 10, resume: bool = False) -> Dict:
-        """Generate templates and test them with multi-simulation"""
+    def generate_and_test_templates(self, regions: List[str] = None, templates_per_region: int = 10, resume: bool = False, max_iterations: int = None) -> Dict:
+        """Generate templates and test them with TRUE CONCURRENT subprocess execution"""
         if regions is None:
             regions = list(self.region_configs.keys())
         
         # Initialize progress tracker
         self.progress_tracker.total_regions = len(regions)
         
-        # Try to resume from previous progress
-        if resume and self.load_progress():
-            logger.info("Resuming from previous progress...")
-            # Filter out already completed regions
-            completed_regions = set()
-            for region in regions:
-                if region in self.all_results.get('templates', {}):
-                    completed_regions.add(region)
-            
-            remaining_regions = [r for r in regions if r not in completed_regions]
-            if not remaining_regions:
-                logger.info("All regions already completed!")
-                return self.all_results
-            
-            logger.info(f"Resuming with remaining regions: {remaining_regions}")
-            regions = remaining_regions
+        # Try to load previous progress (always load if exists, regardless of resume flag)
+        if self.load_progress():
+            if resume:
+                logger.info("Resuming from previous progress...")
+            else:
+                logger.info("Loaded previous progress for exploit data...")
         
         # Update metadata
         self.all_results['metadata']['regions'] = list(self.region_configs.keys())
         self.all_results['metadata']['templates_per_region'] = templates_per_region
         
-        for region in regions:
-            logger.info(f"Processing region: {region}")
-            self.progress_tracker.update_region_progress(region, "Generating templates")
-            
-            # Generate templates
-            templates = self.generate_templates_for_region(region, templates_per_region)
-            self.all_results['templates'][region] = templates
-            
-            if templates:
-                self.progress_tracker.update_region_progress(region, "Simulating templates", 
-                                                           templates=len(templates), simulations=len(templates))
+        iteration = 0
+        logger.info("🚀 Starting TRUE CONCURRENT template generation with subprocess execution...")
+        logger.info("💡 Use Ctrl+C to stop gracefully")
+        logger.info(f"🎯 Target: Maintain {self.max_concurrent} concurrent simulations for maximum efficiency")
+        logger.info(f"🎯 Smart Plan: {self.slot_plans}")
+        
+        try:
+            while True:
+                if max_iterations and iteration >= max_iterations:
+                    logger.info(f"🛑 Reached maximum iterations ({max_iterations})")
+                    break
+                    
+                iteration += 1
+                logger.info(f"\n🔄 === ITERATION {iteration} ===")
+                logger.info(f"📊 Active futures: {len(self.active_futures)}/{self.max_concurrent}")
+                logger.info(f"📊 Completed: {self.completed_count}, Successful: {self.successful_count}, Failed: {self.failed_count}")
                 
-                # Multi-simulate the templates with optimal delay
-                optimal_delay = self.select_optimal_delay(region)
-                simulation_results = self.multi_simulate_templates(templates, region, optimal_delay)
+                # Process completed futures
+                self._process_completed_futures()
                 
-                # Only save successful simulations and collect failure information
-                successful_results = [result for result in simulation_results if result.success]
-                failed_results = [result for result in simulation_results if not result.success]
-                failed_count = len(failed_results)
+                # Fill available slots with new concurrent tasks
+                self._fill_available_slots_concurrent()
                 
-                if failed_count > 0:
-                    logger.info(f"Discarding {failed_count} failed templates for {region}")
-                    # Collect failure patterns for LLM learning
-                    self._collect_failure_patterns(failed_results, region)
-                    # Remove failed templates from progress JSON
-                    failed_templates = [result.template for result in failed_results]
-                    self._remove_failed_templates_from_progress(region, failed_templates)
+                # Save progress every iteration
+                self.save_progress()
                 
-                if successful_results:
-                    logger.info(f"Saving {len(successful_results)} successful templates for {region}")
-                    self.all_results['simulation_results'][region] = [
-                        {
-                            'template': result.template,
-                            'region': result.region,
-                            'sharpe': result.sharpe,
-                            'fitness': result.fitness,
-                            'turnover': result.turnover,
-                            'returns': result.returns,
-                            'drawdown': result.drawdown,
-                            'margin': result.margin,
-                            'longCount': result.longCount,
-                            'shortCount': result.shortCount,
-                            'success': result.success,
-                            'error_message': result.error_message,
-                            'timestamp': result.timestamp
-                        }
-                        for result in successful_results
-                    ]
-                else:
-                    logger.warning(f"No successful templates for {region} - all {len(simulation_results)} templates failed")
-                    self.all_results['simulation_results'][region] = []
-                
-                # Store results for analysis
-                self.template_results.extend(simulation_results)
-                
-                # Generate HTML visualization for this batch (only successful results)
-                if successful_results:
-                    batch_results = {
-                        'metadata': {
-                            'generated_at': datetime.now().isoformat(),
-                            'batch_number': self.progress_tracker.completed_regions,
-                            'region': region,
-                            'delay': optimal_delay,
-                            'pyramid_multiplier': self.pyramid_multipliers[region].get(str(optimal_delay), 1.0),
-                            'total_generated': len(simulation_results),
-                            'successful': len(successful_results),
-                            'failed': failed_count
-                        },
-                        'simulation_results': {region: [
-                            {
-                                'template': result.template,
-                                'region': result.region,
-                                'sharpe': result.sharpe,
-                                'fitness': result.fitness,
-                                'turnover': result.turnover,
-                                'returns': result.returns,
-                                'drawdown': result.drawdown,
-                                'margin': result.margin,
-                                'longCount': result.longCount,
-                                'shortCount': result.shortCount,
-                                'success': result.success,
-                                'error_message': result.error_message,
-                                'timestamp': result.timestamp
-                            }
-                            for result in successful_results
-                        ]},
-                        'analysis': self.analyze_results()
-                    }
-                else:
-                    # No successful results, create empty batch
-                    batch_results = {
-                        'metadata': {
-                            'generated_at': datetime.now().isoformat(),
-                            'batch_number': self.progress_tracker.completed_regions,
-                            'region': region,
-                            'delay': optimal_delay,
-                            'pyramid_multiplier': self.pyramid_multipliers[region].get(str(optimal_delay), 1.0),
-                            'total_generated': len(simulation_results),
-                            'successful': 0,
-                            'failed': failed_count
-                        },
-                        'simulation_results': {region: []},
-                        'analysis': self.analyze_results()
-                    }
-                html_file = self.generate_html_visualization(batch_results, self.progress_tracker.completed_regions + 1)
-                logger.info(f"📊 HTML visualization generated: {html_file}")
-            
-            # Complete region
-            self.progress_tracker.complete_region()
-            
-            # Save progress after each region
-            self.save_progress()
-            
-            # Add delay between regions
-            time.sleep(2)
+                # Wait a bit before next iteration
+                time.sleep(2)
+                    
+        except KeyboardInterrupt:
+            logger.info("\n🛑 Received interrupt signal. Stopping gracefully...")
+            # Wait for active futures to complete
+            self._wait_for_futures_completion()
+        
+        # Shutdown executor
+        self.executor.shutdown(wait=True)
         
         return self.all_results
+    
+    def process_simulation_results(self, simulation_results, region, delay, iteration):
+        """Process simulation results and update bandit"""
+        successful_results = [r for r in simulation_results if r.success]
+        failed_count = len(simulation_results) - len(successful_results)
+        
+        if failed_count > 0:
+            logger.info(f"🗑️ Discarding {failed_count} failed templates")
+        
+        if successful_results:
+            logger.info(f"💾 Found {len(successful_results)} successful templates")
+            
+            # Update bandit with rewards
+            for result in successful_results:
+                # Extract main operator from template
+                main_operator = self.extract_main_operator(result.template)
+                if main_operator:
+                    # Use sharpe ratio as reward
+                    reward = max(0, result.sharpe)  # Ensure non-negative reward
+                    self.bandit.update_arm(main_operator, reward)
+                    logger.info(f"Updated bandit: {main_operator} -> reward={reward:.3f}")
+            
+            # Add to results
+            if region not in self.all_results['simulation_results']:
+                self.all_results['simulation_results'][region] = []
+            self.all_results['simulation_results'][region].extend(successful_results)
+            
+            # Update progress tracker
+            for result in successful_results:
+                self.progress_tracker.update_simulation_progress(True, result.sharpe, result.template)
+        else:
+            logger.warning(f"⚠️ No successful simulations in this batch")
+    
+    def extract_main_operator(self, template):
+        """Extract the main operator from a template"""
+        # Simple heuristic: find the outermost operator
+        template = template.strip()
+        if '(' in template:
+            # Find the first operator before the first parenthesis
+            paren_pos = template.find('(')
+            operator_part = template[:paren_pos].strip()
+            if operator_part:
+                return operator_part
+        return None
+    
+    def generate_template_variations(self, base_template, region, delay):
+        """Generate variations of a successful template with different data fields"""
+        # Get available data fields for this region/delay
+        data_fields = self.get_data_fields_for_region(region, delay)
+        if not data_fields:
+            return []
+        
+        # Extract the base template structure
+        base_code = base_template['template']
+        
+        # Find all field names in the base template
+        import re
+        # More flexible pattern to match various field types
+        field_patterns = [
+            r'fnd\d+_[a-zA-Z0-9_]+',  # fnd28_field_name
+            r'[a-zA-Z_][a-zA-Z0-9_]*',  # cash_st, volume, etc.
+        ]
+        
+        existing_fields = []
+        for pattern in field_patterns:
+            fields = re.findall(pattern, base_code)
+            existing_fields.extend(fields)
+        
+        # Remove duplicates and filter out common words that aren't fields
+        common_words = {'max', 'min', 'log', 'abs', 'scale', 'rank', 'ts_rank', 'ts_mean', 'ts_std', 'ts_delta', 'ts_av_diff', 'divide', 'multiply', 'add', 'subtract', 'if_else', 'winsorize', 'group_neutralize', 'longscale', 'shortscale', 'scale'}
+        existing_fields = list(set([f for f in existing_fields if f not in common_words and len(f) > 2]))
+        
+        if not existing_fields:
+            logger.warning(f"No field patterns found in template: {base_code[:50]}...")
+            return []
+        
+        # Generate variations by randomly selecting new data fields
+        import random
+        variations = []
+        field_names = [field['id'] for field in data_fields]
+        
+        # Generate multiple variations with random field selections
+        num_variations = min(50, len(field_names))  # Generate up to 50 variations or all available fields
+        
+        # Get existing field positions in the template for replacement
+        existing_field_positions = []
+        for field in existing_fields:
+            start_pos = base_code.find(field)
+            if start_pos != -1:
+                existing_field_positions.append((field, start_pos, start_pos + len(field)))
+        
+        # Sort by position to replace from right to left (to maintain positions)
+        existing_field_positions.sort(key=lambda x: x[1], reverse=True)
+        
+        # Generate variations
+        used_combinations = set()  # Track used field combinations to avoid duplicates
+        
+        for i in range(num_variations):
+            # Randomly select fields to use in this variation
+            num_fields_to_use = random.randint(1, min(3, len(existing_fields)))  # Use 1-3 fields
+            selected_fields = random.sample(field_names, num_fields_to_use)
+            
+            # Create field combination signature to avoid duplicates
+            field_signature = tuple(sorted(selected_fields))
+            if field_signature in used_combinations:
+                continue  # Skip duplicate combination
+            used_combinations.add(field_signature)
+            
+            # Create variation by replacing existing fields with randomly selected ones
+            variation_code = base_code
+            fields_used = []
+            
+            # Replace existing fields with randomly selected ones
+            for j, (old_field, start_pos, end_pos) in enumerate(existing_field_positions):
+                if j < len(selected_fields):
+                    new_field = selected_fields[j]
+                    variation_code = variation_code[:start_pos] + new_field + variation_code[end_pos:]
+                    fields_used.append(new_field)
+            
+            # Only add if the variation is different from the original
+            if variation_code != base_code:
+                variations.append({
+                    'template': variation_code,
+                    'region': region,
+                    'operators_used': base_template.get('operators_used', []),
+                    'fields_used': fields_used
+                })
+        
+        logger.info(f"Generated {len(variations)} variations for template: {base_code[:50]}... (from {len(field_names)} available fields)")
+        return variations
+    
+    def _process_completed_futures(self):
+        """Process completed futures and update bandit"""
+        completed_futures = []
+        
+        for future_id, future in self.active_futures.items():
+            if future.done():
+                completed_futures.append(future_id)
+                try:
+                    result = future.result()
+                    if result and result.success:
+                        self.successful_count += 1
+                        self._update_bandit_with_result(result)
+                        self._add_to_results(result)
+                        logger.info(f"✅ CONCURRENT simulation SUCCESS: {result.template[:50]}... (Sharpe: {result.sharpe:.3f})")
+                    elif result and not result.success:
+                        self.failed_count += 1
+                        error_msg = getattr(result, 'error_message', 'Simulation failed')
+                        logger.info(f"❌ CONCURRENT simulation FAILED: {result.template[:50]}... - {error_msg}")
+                    else:
+                        # result is None - this means the concurrent task failed to return a proper result
+                        self.failed_count += 1
+                        logger.info(f"❌ CONCURRENT simulation FAILED: Task returned no result (likely template generation or API error)")
+                except Exception as e:
+                    self.failed_count += 1
+                    logger.error(f"❌ CONCURRENT simulation ERROR: {e}")
+        
+        # Remove completed futures
+        for future_id in completed_futures:
+            del self.active_futures[future_id]
+            self.completed_count += 1
+    
+    def _fill_available_slots_concurrent(self):
+        """Fill available slots with TRUE CONCURRENT subprocess execution"""
+        available_slots = self.max_concurrent - len(self.active_futures)
+        
+        if available_slots > 0:
+            logger.info(f"🎯 Filling {available_slots} available slots with CONCURRENT tasks...")
+            
+            for _ in range(available_slots):
+                # Get next action from smart plan
+                plan_type = self.slot_plans[self.slot_plan_index % len(self.slot_plans)]
+                self.slot_plan_index += 1
+                
+                if plan_type == 'explore':
+                    # Explore: generate new template and simulate CONCURRENTLY
+                    future = self.executor.submit(self._explore_and_simulate_concurrent)
+                    future_id = f"explore_{int(time.time() * 1000)}"
+                    self.active_futures[future_id] = future
+                    logger.info(f"🚀 Started CONCURRENT EXPLORE task: {future_id}")
+                
+                elif plan_type == 'exploit':
+                    # Exploit: try to use existing successful template
+                    logger.info(f"🎯 EXPLOIT mode: Looking for successful templates...")
+                    successful_templates = self._get_successful_templates()
+                    if successful_templates:
+                        # Use best performing template
+                        best_template = max(successful_templates, key=lambda x: x.get('sharpe', 0))
+                        logger.info(f"🎯 EXPLOIT: Using best template with Sharpe={best_template.get('sharpe', 0):.3f}")
+                        future = self.executor.submit(self._exploit_and_simulate_concurrent, best_template)
+                        future_id = f"exploit_{int(time.time() * 1000)}"
+                        self.active_futures[future_id] = future
+                        logger.info(f"🚀 Started CONCURRENT EXPLOIT task: {future_id}")
+                    else:
+                        # No successful templates yet, fallback to explore
+                        logger.info(f"🎯 EXPLOIT: No successful templates found, falling back to EXPLORE")
+                        future = self.executor.submit(self._explore_and_simulate_concurrent)
+                        future_id = f"explore_fallback_{int(time.time() * 1000)}"
+                        self.active_futures[future_id] = future
+                        logger.info(f"🚀 Started CONCURRENT EXPLORE (fallback) task: {future_id}")
+    
+    def _explore_and_simulate_concurrent(self) -> Optional[TemplateResult]:
+        """CONCURRENTLY explore new template and simulate it"""
+        try:
+            # Generate new template with retry logic
+            region = self.select_region_by_pyramid()
+            delay = self.select_optimal_delay(region)
+            templates = self.generate_templates_for_region_with_retry(region, 1, 5)
+            
+            if not templates:
+                logger.warning(f"No templates generated for {region}")
+                return TemplateResult(
+                    template="",
+                    region=region,
+                    settings={'region': region, 'delay': delay},
+                    success=False,
+                    error_message="No templates generated",
+                    timestamp=time.time()
+                )
+            
+            template = templates[0]
+            logger.info(f"🔍 EXPLORING new template: {template['template'][:50]}...")
+            
+            # Simulate the template CONCURRENTLY
+            return self._simulate_template_concurrent(template, region, delay)
+            
+        except Exception as e:
+            logger.error(f"Error in explore_and_simulate_concurrent: {e}")
+            return TemplateResult(
+                template="",
+                region="",
+                settings={},
+                success=False,
+                error_message=f"Explore error: {str(e)}",
+                timestamp=time.time()
+            )
+    
+    def _exploit_and_simulate_concurrent(self, best_template: Dict) -> Optional[TemplateResult]:
+        """CONCURRENTLY exploit existing template and simulate it"""
+        try:
+            region = best_template['region']
+            delay = self.select_optimal_delay(region)
+            
+            # Generate variations of the successful template
+            variations = self.generate_template_variations(best_template, region, delay)
+            
+            if not variations:
+                logger.warning(f"No variations generated for {region}")
+                return TemplateResult(
+                    template=best_template.get('template', ''),
+                    region=region,
+                    settings={'region': region, 'delay': delay},
+                    success=False,
+                    error_message="No variations generated",
+                    timestamp=time.time()
+                )
+            
+            variation = variations[0]
+            logger.info(f"🎯 EXPLOITING template variation: {variation['template'][:50]}...")
+            
+            # Simulate the variation CONCURRENTLY
+            return self._simulate_template_concurrent(variation, region, delay)
+            
+        except Exception as e:
+            logger.error(f"Error in exploit_and_simulate_concurrent: {e}")
+            return TemplateResult(
+                template=best_template.get('template', ''),
+                region=best_template.get('region', ''),
+                settings={},
+                success=False,
+                error_message=f"Exploit error: {str(e)}",
+                timestamp=time.time()
+            )
+    
+    def _simulate_template_concurrent(self, template: Dict, region: str, delay: int) -> Optional[TemplateResult]:
+        """CONCURRENTLY simulate a single template"""
+        try:
+            # Create simulation data with all required fields
+            simulation_data = {
+                'type': 'REGULAR',
+                'settings': {
+                    'instrumentType': 'EQUITY',
+                    'region': region,
+                    'universe': self.region_configs[region].universe,
+                    'delay': delay,
+                    'decay': 0,
+                    'neutralization': 'INDUSTRY',
+                    'truncation': 0.08,
+                    'pasteurization': 'ON',
+                    'unitHandling': 'VERIFY',
+                    'nanHandling': 'OFF',
+                    'maxTrade': 'ON' if self.region_configs[region].max_trade else 'OFF',
+                    'language': 'FASTEXPR',
+                    'visualization': False,
+                    'startDate': '2013-01-20',
+                    'endDate': '2023-01-20',
+                    'testPeriod': 'P5Y0M0D'
+                },
+                'regular': template['template']
+            }
+            
+            # Submit simulation
+            response = self.sess.post('https://api.worldquantbrain.com/simulations', json=simulation_data)
+            
+            if response.status_code != 201:
+                error_message = f"Failed to submit simulation: {response.status_code}"
+                logger.error(f"Failed to submit simulation: {response.status_code} - {response.text}")
+                # Record the failure for learning
+                self.record_failure(region, template['template'], error_message)
+                
+                return TemplateResult(
+                    template=template['template'],
+                    region=region,
+                    settings={'region': region, 'delay': delay},
+                    success=False,
+                    error_message=error_message,
+                    timestamp=time.time()
+                )
+            
+            progress_url = response.headers.get('Location')
+            if not progress_url:
+                error_message = "No Location header in response"
+                logger.error(f"No Location header in response")
+                # Record the failure for learning
+                self.record_failure(region, template['template'], error_message)
+                
+                return TemplateResult(
+                    template=template['template'],
+                    region=region,
+                    settings={'region': region, 'delay': delay},
+                    success=False,
+                    error_message=error_message,
+                    timestamp=time.time()
+                )
+            
+            # Monitor simulation progress CONCURRENTLY
+            return self._monitor_simulation_concurrent(progress_url, template, region, delay)
+            
+        except Exception as e:
+            error_message = f"Simulation error: {str(e)}"
+            logger.error(f"Error in simulate_template_concurrent: {e}")
+            # Record the failure for learning
+            self.record_failure(region, template['template'], error_message)
+            
+            return TemplateResult(
+                template=template['template'],
+                region=region,
+                settings={'region': region, 'delay': delay},
+                success=False,
+                error_message=error_message,
+                timestamp=time.time()
+            )
+    
+    def _monitor_simulation_concurrent(self, progress_url: str, template: Dict, region: str, delay: int) -> Optional[TemplateResult]:
+        """CONCURRENTLY monitor simulation progress"""
+        max_wait_time = 3600  # 1 hour maximum wait time
+        start_time = time.time()
+        
+        while (time.time() - start_time) < max_wait_time:
+            try:
+                response = self.sess.get(progress_url)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    status = data.get('status')
+                    
+                    if status == 'COMPLETE':
+                        # Get the alphaId from the simulation response
+                        alpha_id = data.get('alpha')
+                        if not alpha_id:
+                            logger.error(f"No alphaId in completed simulation response")
+                            return TemplateResult(
+                                template=template['template'],
+                                region=region,
+                                settings={'region': region, 'delay': delay},
+                                success=False,
+                                error_message="No alphaId in simulation response",
+                                timestamp=time.time()
+                            )
+                        
+                        # Fetch the alpha data using the alphaId
+                        logger.info(f"Simulation complete, fetching alpha {alpha_id}")
+                        alpha_response = self.sess.get(f'https://api.worldquantbrain.com/alphas/{alpha_id}')
+                        
+                        if alpha_response.status_code != 200:
+                            logger.error(f"Failed to fetch alpha {alpha_id}: {alpha_response.status_code}")
+                            return TemplateResult(
+                                template=template['template'],
+                                region=region,
+                                settings={'region': region, 'delay': delay},
+                                success=False,
+                                error_message=f"Failed to fetch alpha: {alpha_response.status_code}",
+                                timestamp=time.time()
+                            )
+                        
+                        alpha_data = alpha_response.json()
+                        is_data = alpha_data.get('is', {})
+                        
+                        # Extract metrics from the alpha data
+                        sharpe = is_data.get('sharpe', 0)
+                        fitness = is_data.get('fitness', 0)
+                        turnover = is_data.get('turnover', 0)
+                        returns = is_data.get('returns', 0)
+                        drawdown = is_data.get('drawdown', 0)
+                        margin = is_data.get('margin', 0)
+                        longCount = is_data.get('longCount', 0)
+                        shortCount = is_data.get('shortCount', 0)
+                        
+                        # A simulation is successful if it completed and has meaningful metrics
+                        # Check if we have at least some non-zero performance indicators
+                        has_meaningful_metrics = (
+                            sharpe != 0 or  # Non-zero Sharpe ratio
+                            (fitness is not None and fitness != 0) or  # Non-zero fitness
+                            turnover != 0 or  # Non-zero turnover
+                            returns != 0 or  # Non-zero returns
+                            longCount > 0 or  # Has long positions
+                            shortCount > 0  # Has short positions
+                        )
+                        
+                        is_truly_successful = has_meaningful_metrics
+                        
+                        logger.info(f"Alpha {alpha_id} metrics: Sharpe={sharpe}, Fitness={fitness}, Turnover={turnover}, Returns={returns}")
+                        logger.info(f"Alpha {alpha_id} positions: Long={longCount}, Short={shortCount}")
+                        logger.info(f"Alpha {alpha_id} success: {is_truly_successful}")
+                        
+                        return TemplateResult(
+                            template=template['template'],
+                            region=region,
+                            settings={'region': region, 'delay': delay},
+                            sharpe=sharpe,
+                            fitness=fitness if fitness is not None else 0,
+                            turnover=turnover,
+                            returns=returns,
+                            drawdown=drawdown,
+                            margin=margin,
+                            longCount=longCount,
+                            shortCount=shortCount,
+                            success=is_truly_successful,
+                            timestamp=time.time()
+                        )
+                    
+                    elif status in ['FAILED', 'ERROR']:
+                        error_message = data.get('message', 'Unknown error')
+                        # Record the failure for learning
+                        self.record_failure(region, template['template'], error_message)
+                        
+                        return TemplateResult(
+                            template=template['template'],
+                            region=region,
+                            settings={'region': region, 'delay': delay},
+                            success=False,
+                            error_message=error_message,
+                            timestamp=time.time()
+                        )
+                
+                elif response.status_code == 401:
+                    logger.info("Session expired, re-authenticating...")
+                    self.setup_auth()
+                    continue
+                
+            except Exception as e:
+                logger.error(f"Error monitoring simulation: {e}")
+                continue
+            
+            # Wait before next check
+            time.sleep(10)
+        
+        # Timeout
+        error_message = "Simulation timeout"
+        # Record the failure for learning
+        self.record_failure(region, template['template'], error_message)
+        
+        return TemplateResult(
+            template=template['template'],
+            region=region,
+            settings={'region': region, 'delay': delay},
+            success=False,
+            error_message=error_message,
+            timestamp=time.time()
+        )
+    
+    def _wait_for_futures_completion(self):
+        """Wait for all active futures to complete"""
+        logger.info(f"Waiting for {len(self.active_futures)} active futures to complete...")
+        
+        while self.active_futures:
+            self._process_completed_futures()
+            if self.active_futures:
+                time.sleep(5)  # Check every 5 seconds
+        
+        logger.info("All futures completed")
+    
+    def _update_bandit_with_result(self, result):
+        """Update the bandit with simulation result"""
+        if result.success:
+            main_operator = self.extract_main_operator(result.template)
+            if main_operator:
+                reward = max(0, result.sharpe)
+                self.bandit.update_arm(main_operator, reward)
+                logger.info(f"Updated bandit: {main_operator} -> reward={reward:.3f}")
+    
+    def _add_to_results(self, result):
+        """Add result to the results collection"""
+        if result.success:
+            region = result.region
+            if region not in self.all_results['simulation_results']:
+                self.all_results['simulation_results'][region] = []
+            
+            # Add to simulation results
+            self.all_results['simulation_results'][region].append({
+                'template': result.template,
+                'region': result.region,
+                'sharpe': result.sharpe,
+                'fitness': result.fitness,
+                'turnover': result.turnover,
+                'returns': result.returns,
+                'drawdown': result.drawdown,
+                'margin': result.margin,
+                'longCount': result.longCount,
+                'shortCount': result.shortCount,
+                'success': result.success,
+                'error_message': result.error_message,
+                'timestamp': result.timestamp
+            })
+            
+            # Also add to templates section (only successful templates)
+            if region not in self.all_results['templates']:
+                self.all_results['templates'][region] = []
+            
+            # Check if template already exists in templates section to avoid duplicates
+            template_exists = any(t.get('template') == result.template for t in self.all_results['templates'][region])
+            if not template_exists:
+                self.all_results['templates'][region].append({
+                    'region': result.region,
+                    'template': result.template,
+                    'operators_used': self.extract_operators_from_template(result.template),
+                    'fields_used': self.extract_fields_from_template(result.template, [])
+                })
+                logger.info(f"Added successful template to templates section: {result.template[:50]}...")
+            
+            # Update progress tracker
+            self.progress_tracker.update_simulation_progress(True, result.sharpe, result.template)
+        else:
+            # Failed simulation - remove from results if it was previously saved
+            self._remove_failed_template_from_results(result.template)
+            logger.info(f"Failed template NOT saved to results: {result.template[:50]}...")
+    
+    def _wait_for_completion(self):
+        """Wait for all active simulations to complete"""
+        logger.info(f"Waiting for {self.active_simulations} active simulations to complete...")
+        
+        while self.active_simulations > 0:
+            self._process_completed_simulations()
+            if self.active_simulations > 0:
+                time.sleep(5)  # Check every 5 seconds
+        
+        logger.info("All simulations completed")
+    
+    def _get_successful_templates(self):
+        """Get all successful templates from results"""
+        successful_templates = []
+        total_results = 0
+        for region, results in self.all_results.get('simulation_results', {}).items():
+            total_results += len(results)
+            for result in results:
+                if result.get('success', False):
+                    successful_templates.append(result)
+        
+        logger.info(f"📊 Found {len(successful_templates)} successful templates out of {total_results} total results")
+        if successful_templates:
+            best_sharpe = max(successful_templates, key=lambda x: x.get('sharpe', 0))
+            logger.info(f"🏆 Best successful template: Sharpe={best_sharpe.get('sharpe', 0):.3f}, Region={best_sharpe.get('region', 'N/A')}")
+        
+        return successful_templates
+    
+    def _remove_failed_template_from_results(self, template_text):
+        """Remove a failed template from results if it was previously saved"""
+        removed_from_simulation_results = False
+        removed_from_templates = False
+        
+        # Remove from simulation_results
+        for region, results in self.all_results.get('simulation_results', {}).items():
+            for i, result in enumerate(results):
+                if result.get('template') == template_text:
+                    logger.info(f"Removing failed template from simulation_results: {template_text[:50]}...")
+                    results.pop(i)
+                    removed_from_simulation_results = True
+                    break
+        
+        # Remove from templates section
+        for region, templates in self.all_results.get('templates', {}).items():
+            for i, template in enumerate(templates):
+                if template.get('template') == template_text:
+                    logger.info(f"Removing failed template from templates section: {template_text[:50]}...")
+                    templates.pop(i)
+                    removed_from_templates = True
+                    break
+        
+        return removed_from_simulation_results or removed_from_templates
     
     def analyze_results(self) -> Dict:
         """Analyze the simulation results"""
@@ -1157,143 +2015,7 @@ Generate {num_templates} templates:"""
             }
         
         return analysis
-    
-    def generate_html_visualization(self, results: Dict, batch_number: int = 0):
-        """Generate HTML visualization of progress and results"""
-        html_content = f"""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Template Generator Progress - Batch {batch_number}</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
-        body {{
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: #333;
-        }}
-        .container {{
-            max-width: 1200px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 15px;
-            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-            overflow: hidden;
-        }}
-        .header {{
-            background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
-            color: white;
-            padding: 30px;
-            text-align: center;
-        }}
-        .header h1 {{
-            margin: 0;
-            font-size: 2.5em;
-            font-weight: 300;
-        }}
-        .stats-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px;
-            padding: 30px;
-        }}
-        .stat-card {{
-            background: #f8f9fa;
-            border-radius: 10px;
-            padding: 20px;
-            text-align: center;
-            border-left: 4px solid #3498db;
-        }}
-        .stat-card .value {{
-            font-size: 2.5em;
-            font-weight: bold;
-            color: #3498db;
-            margin: 0;
-        }}
-        .bandit-stats {{
-            background: #e8f5e8;
-            border-radius: 10px;
-            padding: 20px;
-            margin: 20px 0;
-        }}
-        .arm-stats {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-            margin-top: 15px;
-        }}
-        .arm-card {{
-            background: white;
-            border-radius: 8px;
-            padding: 15px;
-            border: 2px solid #27ae60;
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🚀 Template Generator Progress</h1>
-            <p>Batch {batch_number} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-            <p>Region: {results.get('metadata', {}).get('region', 'Unknown')} | 
-               Delay: {results.get('metadata', {}).get('delay', 'N/A')} | 
-               Pyramid Multiplier: {results.get('metadata', {}).get('pyramid_multiplier', 'N/A')}</p>
-        </div>
-        
-        <div class="stats-grid">
-            <div class="stat-card">
-                <h3>Total Generated</h3>
-                <p class="value">{results.get('metadata', {}).get('total_generated', 0)}</p>
-            </div>
-            <div class="stat-card">
-                <h3>Successful</h3>
-                <p class="value">{results.get('metadata', {}).get('successful', 0)}</p>
-            </div>
-            <div class="stat-card">
-                <h3>Failed</h3>
-                <p class="value">{results.get('metadata', {}).get('failed', 0)}</p>
-            </div>
-            <div class="stat-card">
-                <h3>Success Rate</h3>
-                <p class="value">{results.get('analysis', {}).get('success_rate', 0):.1%}</p>
-            </div>
-        </div>
-        
-        <div class="bandit-stats">
-            <h3>🎯 Multi-Arm Bandit Statistics</h3>
-            <div class="arm-stats">
-"""
-        
-        # Add bandit statistics
-        for arm_id, stats in self.bandit.arm_stats.items():
-            html_content += f"""
-                <div class="arm-card">
-                    <h4>{arm_id}</h4>
-                    <p><strong>Pulls:</strong> {stats['pulls']}</p>
-                    <p><strong>Avg Reward:</strong> {stats['avg_reward']:.3f}</p>
-                </div>
-"""
-        
-        html_content += """
-            </div>
-        </div>
-    </div>
-</body>
-</html>
-"""
-        
-        # Save HTML file
-        html_filename = f"template_progress_batch_{batch_number}.html"
-        with open(html_filename, 'w', encoding='utf-8') as f:
-            f.write(html_content)
-        
-        logger.info(f"HTML visualization saved to {html_filename}")
-        return html_filename
-
+   
     def save_results(self, results: Dict, filename: str = None):
         """Save results to JSON file"""
         if filename is None:
@@ -1310,14 +2032,14 @@ Generate {num_templates} templates:"""
             logger.error(f"Failed to save results: {e}")
 
 def main():
-    parser = argparse.ArgumentParser(description='Enhanced template generator v2 with multi-simulation testing')
+    parser = argparse.ArgumentParser(description='Enhanced template generator v2 with TRUE CONCURRENT subprocess execution')
     parser.add_argument('--credentials', default='credential.txt', help='Path to credentials file')
     parser.add_argument('--deepseek-key', required=True, help='DeepSeek API key')
     parser.add_argument('--output', default='enhanced_results_v2.json', help='Output filename')
     parser.add_argument('--progress-file', default='template_progress_v2.json', help='Progress file')
     parser.add_argument('--regions', nargs='+', help='Regions to process (default: all)')
     parser.add_argument('--templates-per-region', type=int, default=10, help='Number of templates per region')
-    parser.add_argument('--max-concurrent', type=int, default=5, help='Maximum concurrent simulations')
+    parser.add_argument('--max-concurrent', type=int, default=8, help='Maximum concurrent simulations (default: 8)')
     parser.add_argument('--resume', action='store_true', help='Resume from previous progress')
     
     args = parser.parse_args()
@@ -1340,21 +2062,22 @@ def main():
         
         # Print final summary
         print(f"\n{'='*70}")
-        print("🎉 ENHANCED TEMPLATE GENERATION COMPLETE!")
+        print("🎉 TRUE CONCURRENT TEMPLATE GENERATION COMPLETE!")
         print(f"{'='*70}")
         
-        total_templates = sum(len(templates) for templates in results['templates'].values())
         total_simulations = sum(len(sims) for sims in results['simulation_results'].values())
         successful_sims = sum(len([s for s in sims if s.get('success', False)]) for sims in results['simulation_results'].values())
         
         print(f"📊 Final Statistics:")
-        print(f"   Total templates generated: {total_templates}")
-        print(f"   Total simulations: {total_simulations}")
+        print(f"   Total concurrent simulations: {total_simulations}")
         print(f"   Successful simulations: {successful_sims}")
+        print(f"   Failed simulations: {total_simulations - successful_sims}")
         print(f"   Success rate: {successful_sims/total_simulations*100:.1f}%" if total_simulations > 0 else "   Success rate: N/A")
         print(f"   Best Sharpe ratio: {generator.progress_tracker.best_sharpe:.3f}")
         print(f"   Results saved to: {args.output}")
         print(f"   Progress saved to: {args.progress_file}")
+        print(f"   Smart Plan Used: {generator.slot_plans}")
+        print(f"   Max Concurrent: {generator.max_concurrent}")
         
     except Exception as e:
         logger.error(f"Enhanced template generation failed: {e}")
