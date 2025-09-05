@@ -302,7 +302,7 @@ class GeneticAlgorithm:
 class AdaptiveAlphaMiner:
     """Adaptive alpha miner using multi-arm bandit and genetic algorithm."""
     
-    def __init__(self, credentials_path: str, ollama_url: str = "http://localhost:11434", ollama_model: str = "deepseek-r1:8b", universe: str = None):
+    def __init__(self, credentials_path: str, ollama_url: str = "http://localhost:11434", ollama_model: str = "deepseek-r1:8b", region: str = None):
         self.sess = requests.Session()
         self.credentials_path = credentials_path
         self.ollama_url = ollama_url
@@ -318,17 +318,17 @@ class AdaptiveAlphaMiner:
         self.best_score = 0
         self.results_history = []
         
-        # Universe consistency - select one universe and stick with it
-        if universe:
-            self.selected_universe = universe
-            self.selected_region = self._get_region_for_universe(universe)
-            logger.info(f"Using specified universe: {self.selected_universe} in region: {self.selected_region}")
+        # Region consistency - select one region and stick with it
+        if region:
+            self.selected_region = region
+            self.selected_universe = self._get_universe_for_region(region)
+            logger.info(f"Using specified region: {self.selected_region} with universe: {self.selected_universe}")
         else:
-            self.selected_universe = self._select_universe()
-            self.selected_region = self._get_region_for_universe(self.selected_universe)
-            logger.info(f"Randomly selected universe: {self.selected_universe} in region: {self.selected_region}")
+            self.selected_region = self._select_region()
+            self.selected_universe = self._get_universe_for_region(self.selected_region)
+            logger.info(f"Randomly selected region: {self.selected_region} with universe: {self.selected_universe}")
         
-        # Settings variations - only for the selected universe
+        # Settings variations - only for the selected region
         self._initialize_settings_variations()
         
         # Load state
@@ -351,44 +351,29 @@ class AdaptiveAlphaMiner:
             raise Exception(f"Authentication failed: {response.text}")
         logger.info("Authentication successful")
     
-    def _select_universe(self) -> str:
-        """Select a random universe to use consistently throughout mining."""
-        universe_options = {
-            "USA": ["TOP3000", "TOP1000", "TOP500", "TOP200", "TOPSP500"],
-            "GLB": ["TOP3000", "MINVOL1M", "TOPDIV3000"],
-            "EUR": ["TOP2500", "TOP1200", "TOP800", "TOP400"],
-            "ASI": ["MINVOL1M"],
-            "CHN": ["TOP2000U"]
-        }
+    def _select_region(self) -> str:
+        """Select a random region to use consistently throughout mining."""
+        region_options = ["USA", "GLB", "EUR", "ASI", "CHN"]
         
-        # Randomly select a region first
-        region = random.choice(list(universe_options.keys()))
-        # Then randomly select a universe from that region
-        universe = random.choice(universe_options[region])
+        # Randomly select a region
+        region = random.choice(region_options)
         
-        logger.info(f"Randomly selected universe: {universe} from region: {region}")
-        return universe
+        logger.info(f"Randomly selected region: {region}")
+        return region
     
-    def _get_region_for_universe(self, universe: str) -> str:
-        """Get the region for a given universe."""
-        universe_to_region = {
-            "TOP3000": "USA" if universe == "TOP3000" else "GLB",
-            "TOP1000": "USA",
-            "TOP500": "USA", 
-            "TOP200": "USA",
-            "TOPSP500": "USA",
-            "MINVOL1M": "GLB" if universe == "MINVOL1M" else "ASI",
-            "TOPDIV3000": "GLB",
-            "TOP2500": "EUR",
-            "TOP1200": "EUR",
-            "TOP800": "EUR",
-            "TOP400": "EUR",
-            "TOP2000U": "CHN"
+    def _get_universe_for_region(self, region: str) -> str:
+        """Get a default universe for a given region."""
+        region_to_universe = {
+            "USA": "TOP3000",
+            "GLB": "TOP3000", 
+            "EUR": "TOP2500",
+            "ASI": "MINVOL1M",
+            "CHN": "TOP2000U"
         }
-        return universe_to_region.get(universe, "USA")
+        return region_to_universe.get(region, "TOP3000")
     
-    def _get_data_fields_for_universe(self, temp_generator, delay: int = 1) -> List[Dict]:
-        """Get data fields specific to the selected universe and region with specified delay."""
+    def _get_data_fields_for_region(self, temp_generator, delay: int = 1) -> List[Dict]:
+        """Get data fields specific to the selected region with specified delay."""
         datasets = ['fundamental6', 'fundamental2', 'analyst4', 'model16', 'model51', 'news12']
         all_fields = []
         
@@ -401,7 +386,7 @@ class AdaptiveAlphaMiner:
         }
         
         try:
-            logger.info(f"Requesting data fields for universe {self.selected_universe} in region {self.selected_region} with delay={delay}")
+            logger.info(f"Requesting data fields for region {self.selected_region} with universe {self.selected_universe} and delay={delay}")
             for dataset in datasets:
                 # First get the count
                 params = base_params.copy()
@@ -440,18 +425,18 @@ class AdaptiveAlphaMiner:
             
             # Remove duplicates if any
             unique_fields = {field['id']: field for field in all_fields}.values()
-            logger.info(f"Total unique fields found for {self.selected_universe} with delay={delay}: {len(unique_fields)}")
+            logger.info(f"Total unique fields found for region {self.selected_region} with delay={delay}: {len(unique_fields)}")
             return list(unique_fields)
             
         except Exception as e:
-            logger.error(f"Failed to fetch data fields for universe {self.selected_universe} with delay={delay}: {e}")
+            logger.error(f"Failed to fetch data fields for region {self.selected_region} with delay={delay}: {e}")
             return []
     
     def _initialize_settings_variations(self):
-        """Initialize different settings configurations for the bandit using only the selected universe."""
+        """Initialize different settings configurations for the bandit using only the selected region."""
         base_settings = SimulationSettings()
         
-        # Use only the selected universe and region
+        # Use only the selected region and its default universe
         region = self.selected_region
         universe = self.selected_universe
         
@@ -481,30 +466,28 @@ class AdaptiveAlphaMiner:
         
         logger.info(f"Initialized {len(self.bandit.arms)} settings variations for universe {universe} in region {region}")
         
-        # Validate that all arms use the correct universe
-        self._validate_bandit_universe_consistency()
+        # Validate that all arms use the correct region
+        self._validate_bandit_region_consistency()
     
-    def _validate_bandit_universe_consistency(self):
-        """Validate that all bandit arms use the correct universe and region."""
+    def _validate_bandit_region_consistency(self):
+        """Validate that all bandit arms use the correct region."""
         inconsistent_arms = []
         for key, arm_data in self.bandit.arms.items():
             settings = arm_data['settings']
-            if settings.universe != self.selected_universe or settings.region != self.selected_region:
+            if settings.region != self.selected_region:
                 inconsistent_arms.append({
                     'key': key,
-                    'universe': settings.universe,
                     'region': settings.region,
-                    'expected_universe': self.selected_universe,
                     'expected_region': self.selected_region
                 })
         
         if inconsistent_arms:
             logger.error(f"Found {len(inconsistent_arms)} inconsistent bandit arms:")
             for arm in inconsistent_arms:
-                logger.error(f"  Arm {arm['key']}: universe={arm['universe']}, region={arm['region']} (expected: {arm['expected_universe']}, {arm['expected_region']})")
-            raise ValueError("Bandit arms are not consistent with selected universe/region")
+                logger.error(f"  Arm {arm['key']}: region={arm['region']} (expected: {arm['expected_region']})")
+            raise ValueError("Bandit arms are not consistent with selected region")
         else:
-            logger.info("All bandit arms are consistent with selected universe and region")
+            logger.info("All bandit arms are consistent with selected region")
     
     def generate_alpha_expressions(self, count: int = 10) -> List[str]:
         """Generate alpha expressions using Ollama with random combinations of data fields and operators."""
@@ -516,8 +499,8 @@ class AdaptiveAlphaMiner:
             temp_generator = AlphaGenerator(self.credentials_path, self.ollama_url)
             
             # Get data fields for both delay values (0 and 1) as they provide different fields
-            data_fields_delay_0 = self._get_data_fields_for_universe(temp_generator, delay=0)
-            data_fields_delay_1 = self._get_data_fields_for_universe(temp_generator, delay=1)
+            data_fields_delay_0 = self._get_data_fields_for_region(temp_generator, delay=0)
+            data_fields_delay_1 = self._get_data_fields_for_region(temp_generator, delay=1)
             
             # Combine data fields from both delays, removing duplicates
             all_data_fields = data_fields_delay_0 + data_fields_delay_1
@@ -1100,7 +1083,7 @@ Expression:"""
             hopeful_data.sort(key=lambda x: x.get('fitness', 0), reverse=True)
             selected_alphas = hopeful_data[:count]
             
-            logger.info(f"Processing {len(selected_alphas)} hopeful alphas with universe {self.selected_universe}")
+            logger.info(f"Processing {len(selected_alphas)} hopeful alphas with region {self.selected_region}")
             
             results = []
             for alpha_data in selected_alphas:
@@ -1181,8 +1164,8 @@ Expression:"""
                 'population': self.genetic_algo.population,
                 'generation': self.genetic_algo.generation
             },
-            'selected_universe': self.selected_universe,
-            'selected_region': self.selected_region
+            'selected_region': self.selected_region,
+            'selected_universe': self.selected_universe
         }
         
         with open('adaptive_miner_state.json', 'w') as f:
@@ -1212,10 +1195,10 @@ Expression:"""
                 self.genetic_algo.generation = ga_state.get('generation', 0)
                 
                 # Load universe information if available
-                if 'selected_universe' in state and 'selected_region' in state:
-                    self.selected_universe = state['selected_universe']
+                if 'selected_region' in state and 'selected_universe' in state:
                     self.selected_region = state['selected_region']
-                    logger.info(f"Restored universe: {self.selected_universe} in region: {self.selected_region}")
+                    self.selected_universe = state['selected_universe']
+                    logger.info(f"Restored region: {self.selected_region} with universe: {self.selected_universe}")
                 
                 logger.info(f"Loaded state - Best score: {self.best_score}")
                 
@@ -1238,8 +1221,8 @@ def main():
                       help='Number of mining iterations (default: 10)')
     parser.add_argument('--lateral-count', type=int, default=5,
                       help='Number of lateral movements (default: 5)')
-    parser.add_argument('--universe', type=str, default=None,
-                      help='Specify universe to use (e.g., TOP3000, MINVOL1M, TOP2000U). If not specified, will randomly select one.')
+    parser.add_argument('--region', type=str, default=None,
+                      help='Specify region to use (e.g., USA, GLB, EUR, ASI, CHN). If not specified, will randomly select one.')
     parser.add_argument('--hopeful-file', type=str, default='hopeful_alphas.json',
                       help='Path to hopeful alphas file for processing (default: hopeful_alphas.json)')
     parser.add_argument('--hopeful-count', type=int, default=10,
@@ -1248,7 +1231,7 @@ def main():
     args = parser.parse_args()
     
     try:
-        miner = AdaptiveAlphaMiner(args.credentials, args.ollama_url, args.ollama_model, args.universe)
+        miner = AdaptiveAlphaMiner(args.credentials, args.ollama_url, args.ollama_model, args.region)
         
         if args.mode == 'mine':
             logger.info(f"Starting adaptive mining for {args.iterations} iterations")
