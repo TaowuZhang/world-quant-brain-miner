@@ -374,7 +374,6 @@ class AdaptiveAlphaMiner:
     
     def _get_data_fields_for_region(self, temp_generator, delay: int = 1) -> List[Dict]:
         """Get data fields specific to the selected region with specified delay."""
-        datasets = ['fundamental6', 'fundamental2', 'analyst4', 'model16', 'model51', 'news12']
         all_fields = []
         
         base_params = {
@@ -387,7 +386,40 @@ class AdaptiveAlphaMiner:
         
         try:
             logger.info(f"Requesting data fields for region {self.selected_region} with universe {self.selected_universe} and delay={delay}")
-            for dataset in datasets:
+            
+            # First, get available datasets for this region
+            datasets_params = {
+                'category': 'fundamental',
+                'delay': delay,
+                'instrumentType': 'EQUITY',
+                'region': self.selected_region,
+                'universe': self.selected_universe,
+                'limit': 50
+            }
+            
+            logger.info(f"Getting available datasets for region {self.selected_region}")
+            datasets_response = self.sess.get('https://api.worldquantbrain.com/data-sets', params=datasets_params)
+            
+            if datasets_response.status_code == 200:
+                datasets_data = datasets_response.json()
+                available_datasets = datasets_data.get('results', [])
+                logger.info(f"Found {len(available_datasets)} available datasets for region {self.selected_region}")
+                
+                # Extract dataset IDs
+                dataset_ids = [ds.get('id') for ds in available_datasets if ds.get('id')]
+                logger.info(f"Available dataset IDs: {dataset_ids}")
+                
+                # If no datasets found, fall back to default datasets
+                if not dataset_ids:
+                    logger.warning(f"No datasets found for region {self.selected_region}, using default datasets")
+                    dataset_ids = ['fundamental6', 'fundamental2', 'analyst4', 'model16', 'model51', 'news12']
+            else:
+                logger.warning(f"Failed to get datasets for region {self.selected_region}: {datasets_response.text[:500]}")
+                # Fall back to default datasets
+                dataset_ids = ['fundamental6', 'fundamental2', 'analyst4', 'model16', 'model51', 'news12']
+            
+            # Now fetch fields from available datasets
+            for dataset in dataset_ids:
                 # First get the count
                 params = base_params.copy()
                 params['dataset.id'] = dataset
@@ -442,7 +474,13 @@ class AdaptiveAlphaMiner:
         
         neutralizations = ["INDUSTRY", "SECTOR", "MARKET", "NONE", "SLOW_AND_FAST", "FAST", "SLOW"]
         truncations = [0.05, 0.08, 0.1, 0.15]
-        delays = [0, 1]  # Different delays provide different data fields
+        
+        # Region-specific delay availability
+        # ASI and CHN regions only support delay=1 for EQUITY
+        if region in ["ASI", "CHN"]:
+            delays = [1]  # Only delay 1 for ASI/CHN
+        else:
+            delays = [0, 1]  # Both delays for other regions
         
         # Add max trade settings for ASI and CHN regions
         max_trade_options = ["OFF"]
@@ -450,19 +488,19 @@ class AdaptiveAlphaMiner:
             max_trade_options = ["ON", "OFF"]  # Enable max trade for ASI and CHN
         
         for delay in delays:
-            for neutralization in neutralizations:
-                for truncation in truncations:
+        for neutralization in neutralizations:
+            for truncation in truncations:
                     for max_trade in max_trade_options:
-                        settings = SimulationSettings(
+                settings = SimulationSettings(
                             region=region,
                             universe=universe,
-                            instrumentType="EQUITY",
+                    instrumentType="EQUITY",
                             delay=delay,
-                            neutralization=neutralization,
-                            truncation=truncation,
-                            maxTrade=max_trade
-                        )
-                        self.bandit.add_arm(settings)
+                    neutralization=neutralization,
+                    truncation=truncation,
+                    maxTrade=max_trade
+                )
+                self.bandit.add_arm(settings)
         
         logger.info(f"Initialized {len(self.bandit.arms)} settings variations for universe {universe} in region {region}")
         
@@ -498,18 +536,24 @@ class AdaptiveAlphaMiner:
             # Create a temporary generator instance to access the APIs
             temp_generator = AlphaGenerator(self.credentials_path, self.ollama_url)
             
-            # Get data fields for both delay values (0 and 1) as they provide different fields
-            data_fields_delay_0 = self._get_data_fields_for_region(temp_generator, delay=0)
-            data_fields_delay_1 = self._get_data_fields_for_region(temp_generator, delay=1)
-            
-            # Combine data fields from both delays, removing duplicates
-            all_data_fields = data_fields_delay_0 + data_fields_delay_1
-            unique_data_fields = {field['id']: field for field in all_data_fields}.values()
-            data_fields = list(unique_data_fields)
+            # Get data fields based on region capabilities
+            if self.selected_region in ["ASI", "CHN"]:
+                # ASI and CHN regions only support delay=1
+                data_fields = self._get_data_fields_for_region(temp_generator, delay=1)
+                logger.info(f"Fetched {len(data_fields)} fields with delay=1 for region {self.selected_region}")
+            else:
+                # Other regions support both delays
+                data_fields_delay_0 = self._get_data_fields_for_region(temp_generator, delay=0)
+                data_fields_delay_1 = self._get_data_fields_for_region(temp_generator, delay=1)
+                
+                # Combine data fields from both delays, removing duplicates
+                all_data_fields = data_fields_delay_0 + data_fields_delay_1
+                unique_data_fields = {field['id']: field for field in all_data_fields}.values()
+                data_fields = list(unique_data_fields)
+                
+                logger.info(f"Fetched {len(data_fields_delay_0)} fields with delay=0, {len(data_fields_delay_1)} fields with delay=1")
             
             operators = temp_generator.get_operators()
-            
-            logger.info(f"Fetched {len(data_fields_delay_0)} fields with delay=0, {len(data_fields_delay_1)} fields with delay=1")
             logger.info(f"Total unique data fields: {len(data_fields)} and {len(operators)} operators")
             
             # Set data fields for genetic algorithm
@@ -551,70 +595,152 @@ class AdaptiveAlphaMiner:
                 wrappers_formatted = [f"{wrap_name} ({desc})" for wrap_name, desc in selected_wrappers]
                 
                 # Create prompt for Ollama
-                prompt = f"""Generate a WorldQuant Brain alpha expression.
+                prompt = f"""Generate 3 WorldQuant Brain alpha expressions. Return ONLY valid JSON.
 
 Fields: {', '.join(fields_formatted)}
 Operators: {', '.join(operators_formatted)}
 Wrapper Functions: {', '.join(wrappers_formatted)}
 Lookback: {lookback}
 
+REQUIRED JSON FORMAT (no other text):
+{{"expressions": ["expression1", "expression2", "expression3"]}}
+
 Rules:
-1. Use only the provided fields and operators
-2. Return ONLY the expression - no text, no explanations
-3. Make it valid WorldQuant Brain syntax
-4. Use the descriptions to understand how each component works
+1. Use only provided fields and operators
+2. Follow syntax: operator(field_id, lookback) or wrapper(operator(field_id, lookback))
+3. Return ONLY the JSON object
+4. No explanations, no markdown, no thinking
 
-Example: ts_rank(act_12m_eps_value, 60)
+EXAMPLE:
+{{"expressions": ["ts_rank(anl4_dez1afv4_est, 60)", "ts_delta(fnd6_newa1_ib, 120)", "winsorize(ts_zscore(anl4_ady_numest, 240), std=4)"]}}
 
-Expression:"""
+JSON:"""
                 
                 # Call Ollama API
                 ollama_response = self._call_ollama(prompt)
                 
                 if ollama_response and ollama_response.strip():
-                    # Clean up the response
-                    expression = ollama_response.strip()
+                    # Clean up the response to extract JSON
+                    response_text = ollama_response.strip()
                     
                     # Remove thinking tags and explanations
-                    if '<think>' in expression:
-                        # Extract only the part after the last </think> tag
-                        parts = expression.split('</think>')
+                    if '<think>' in response_text:
+                        parts = response_text.split('</think>')
                         if len(parts) > 1:
-                            expression = parts[-1].strip()
+                            response_text = parts[-1].strip()
                     
-                    # Remove any markdown formatting
-                    if '```' in expression:
-                        expression = expression.split('```')[1] if len(expression.split('```')) > 1 else expression
-                    expression = expression.replace('```', '').strip()
+                    # Extract JSON from markdown code blocks
+                    if '```json' in response_text:
+                        json_start = response_text.find('```json') + 7
+                        json_end = response_text.find('```', json_start)
+                        if json_end > json_start:
+                            response_text = response_text[json_start:json_end].strip()
+                    elif '```' in response_text:
+                        json_start = response_text.find('```') + 3
+                        json_end = response_text.find('```', json_start)
+                        if json_end > json_start:
+                            response_text = response_text[json_start:json_end].strip()
                     
-                    # Remove any explanatory text (lines starting with common prefixes)
-                    lines = expression.split('\n')
-                    clean_lines = []
-                    for line in lines:
-                        line = line.strip()
-                        if line and not line.startswith(('Hmm,', 'Okay,', 'I need', 'Let me', 'First,', 'Then,', 'Finally,')):
-                            clean_lines.append(line)
+                    # Try to find JSON object in the response
+                    if '{' in response_text and '}' in response_text:
+                        json_start = response_text.find('{')
+                        json_end = response_text.rfind('}') + 1
+                        if json_end > json_start:
+                            response_text = response_text[json_start:json_end].strip()
                     
-                    expression = ' '.join(clean_lines).strip()
-                    
-                    # Validate that it contains at least one of our selected fields
-                    field_ids = [field_id for field_id, _ in selected_fields]
-                    if any(field_id in expression for field_id in field_ids):
-                        # Additional validation - check for basic syntax
-                        if '(' in expression and ')' in expression:
-                            expressions.append(expression)
-                            logger.info(f"Generated expression {i+1}: {expression}")
+                    # Try to parse as JSON
+                    try:
+                        import json
+                        
+                        # If response is just a single opening brace, it's malformed
+                        if response_text.strip() == '{':
+                            logger.warning("Received malformed JSON (just opening brace)")
+                            raise json.JSONDecodeError("Malformed JSON", response_text, 0)
+                        
+                        parsed_response = json.loads(response_text)
+                        
+                        # Handle different JSON formats
+                        if isinstance(parsed_response, dict):
+                            if 'expressions' in parsed_response:
+                                # Array format: {"expressions": ["expr1", "expr2", "expr3"]}
+                                generated_expressions = parsed_response['expressions']
+                            elif 'expression' in parsed_response:
+                                # Single expression format: {"expression": "expr1"}
+                                generated_expressions = [parsed_response['expression']]
+                            else:
+                                logger.warning(f"Unknown JSON format: {parsed_response}")
+                                generated_expressions = []
+                        elif isinstance(parsed_response, list):
+                            # Direct array format: ["expr1", "expr2", "expr3"]
+                            generated_expressions = parsed_response
                         else:
-                            logger.warning(f"Generated expression has invalid syntax: {expression}")
-                            # Fallback to a simple expression
-                            field_id, _ = random.choice(selected_fields)
-                            operator_name, _ = random.choice(selected_operators)
-                            fallback_expr = f"{operator_name}({field_id}, {lookback})"
-                            expressions.append(fallback_expr)
-                            logger.info(f"Using fallback expression {i+1}: {fallback_expr}")
+                            logger.warning(f"Invalid JSON format: {parsed_response}")
+                            generated_expressions = []
+                        
+                        # Validate and add expressions
+                    field_ids = [field_id for field_id, _ in selected_fields]
+                        for expr in generated_expressions:
+                            if isinstance(expr, str) and expr.strip():
+                                expr = expr.strip()
+                                # Validate that it contains at least one of our selected fields
+                                if any(field_id in expr for field_id in field_ids):
+                        # Additional validation - check for basic syntax
+                                    if '(' in expr and ')' in expr:
+                                        expressions.append(expr)
+                                        logger.info(f"Generated expression: {expr}")
+                        else:
+                                        logger.warning(f"Generated expression has invalid syntax: {expr}")
                     else:
-                        logger.warning(f"Generated expression doesn't contain selected fields: {expression}")
-                        # Fallback to a simple expression
+                                    logger.warning(f"Generated expression doesn't contain selected fields: {expr}")
+                        
+                        # If we got valid expressions, continue to next iteration
+                        if expressions:
+                            continue
+                            
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Failed to parse JSON response: {e}")
+                        logger.warning(f"Raw response: {response_text}")
+                        
+                        # Try to fix common JSON issues
+                        try:
+                            # Fix single quotes to double quotes
+                            fixed_json = response_text.replace("'", '"')
+                            # Fix unquoted property names
+                            import re
+                            fixed_json = re.sub(r'(\w+):', r'"\1":', fixed_json)
+                            # Try parsing the fixed JSON
+                            parsed_response = json.loads(fixed_json)
+                            
+                            # Handle the fixed response
+                            if isinstance(parsed_response, dict):
+                                if 'expressions' in parsed_response:
+                                    generated_expressions = parsed_response['expressions']
+                                elif 'expression' in parsed_response:
+                                    generated_expressions = [parsed_response['expression']]
+                                else:
+                                    generated_expressions = []
+                            elif isinstance(parsed_response, list):
+                                generated_expressions = parsed_response
+                            else:
+                                generated_expressions = []
+                            
+                            # Validate and add expressions
+                            field_ids = [field_id for field_id, _ in selected_fields]
+                            for expr in generated_expressions:
+                                if isinstance(expr, str) and expr.strip():
+                                    expr = expr.strip()
+                                    if any(field_id in expr for field_id in field_ids):
+                                        if '(' in expr and ')' in expr:
+                                            expressions.append(expr)
+                                            logger.info(f"Generated expression (fixed JSON): {expr}")
+                            
+                            if expressions:
+                                continue
+                                
+                        except Exception as fix_error:
+                            logger.warning(f"Failed to fix JSON: {fix_error}")
+                    
+                    # If JSON parsing failed or no valid expressions, use fallback
                         field_id, _ = random.choice(selected_fields)
                         operator_name, _ = random.choice(selected_operators)
                         fallback_expr = f"{operator_name}({field_id}, {lookback})"
@@ -652,10 +778,11 @@ Expression:"""
             "model": model,
             "prompt": prompt,
             "stream": False,
-            "think": False,
+            "format": "json",
             "options": {
-                "temperature": 0.9,
-                "top_p": 0.95
+                "temperature": 0.1,  # Lower temperature for more consistent output
+                "top_p": 0.9,
+                "num_predict": 2500,  # Increased to ensure complete response
             }
         }
         
@@ -663,11 +790,21 @@ Expression:"""
         for attempt in range(max_retries):
             try:
                 logger.info(f"Ollama API call attempt {attempt + 1}/{max_retries}")
-                response = requests.post(f"{ollama_url}/api/generate", json=payload, timeout=1800)
+                response = requests.post(f"{ollama_url}/api/generate", json=payload, timeout=3000)
                 
                 if response.status_code == 200:
                     result = response.json()
-                    return result.get('response', '').strip()
+                    response_text = result.get('response', '').strip()
+                    
+                    # Check if response is too short (likely incomplete)
+                    if len(response_text) < 10:
+                        logger.warning(f"Ollama response too short: '{response_text}'")
+                        if attempt < max_retries - 1:
+                            time.sleep(2 ** attempt)
+                            continue
+                        return None
+                    
+                    return response_text
                 else:
                     logger.error(f"Ollama API error: {response.status_code} - {response.text}")
                     if attempt < max_retries - 1:

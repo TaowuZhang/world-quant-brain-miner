@@ -1,0 +1,347 @@
+{
+  "timestamp": 1757065420.9179173,
+  "total_regions": 5,
+  "completed_regions": 3,
+  "total_templates": 14,
+  "completed_templates": 0,
+  "total_simulations": 14,
+  "completed_simulations": 14,
+  "successful_simulations": 5,
+  "failed_simulations": 9,
+  "current_region": "EUR",
+  "current_phase": "Simulating templates",
+  "best_sharpe": 0.0,
+  "best_template": "",
+  "results": {
+    "metadata": {
+      "generated_at": "2025-09-05 11:35:44",
+      "total_operators": 79,
+      "regions": [
+        "USA",
+        "GLB",
+        "EUR",
+        "ASI",
+        "CHN"
+      ],
+      "templates_per_region": 8,
+      "version": "2.0"
+    },
+    "templates": {
+      "USA": [
+        {
+          "region": "USA",
+          "template": "ts_zscore(ts_delta(capex, 20), 60)",
+          "operators_used": [
+            "or",
+            "ts_zscore",
+            "ts_delta",
+            "zscore"
+          ],
+          "fields_used": [
+            "capex"
+          ]
+        },
+        {
+          "region": "USA",
+          "template": "group_neutralize(ts_corr(cogs, depre_amort, 30), fnd14_03_aijd)",
+          "operators_used": [
+            "or",
+            "ts_corr",
+            "group_neutralize"
+          ],
+          "fields_used": [
+            "fnd14_03_aijd",
+            "cogs",
+            "depre_amort"
+          ]
+        },
+        {
+          "region": "USA",
+          "template": "ts_target_tvr_delta_limit(ts_arg_min(fn_amortization_of_intangible_assets_q, 40), employee, 0.1, 0.9, 0.15)",
+          "operators_used": [
+            "min",
+            "or",
+            "ts_target_tvr_delta_limit",
+            "ts_arg_min"
+          ],
+          "fields_used": [
+            "fn_amortization_of_intangible_assets_q",
+            "assets",
+            "employee"
+          ]
+        },
+        {
+          "region": "USA",
+          "template": "max(ts_min(cashflow_fin, 25), kth_element(fn_accrued_liab_q, 50, 1))",
+          "operators_used": [
+            "min",
+            "max",
+            "kth_element",
+            "ts_min"
+          ],
+          "fields_used": [
+            "fn_accrued_liab_q",
+            "cash",
+            "cashflow",
+            "cashflow_fin"
+          ]
+        },
+        {
+          "region": "USA",
+          "template": "reverse(ts_zscore(group_scale(ts_count_nans(fnd23_description, 15), fnd14_03_aijd), 30))",
+          "operators_used": [
+            "reverse",
+            "or",
+            "ts_zscore",
+            "ts_count_nans",
+            "scale",
+            "zscore",
+            "group_scale"
+          ],
+          "fields_used": [
+            "fnd14_03_aijd",
+            "fnd23_description"
+          ]
+        },
+        {
+          "region": "USA",
+          "template": "less_equal(ts_backfill(fnd14_1_vqe_hsc_hsc_slb_stl, 10, 1, \"NAN\"), group_mean(capex, employee, fnd14_03_aijd))",
+          "operators_used": [
+            "less",
+            "equal",
+            "less_equal",
+            "ts_backfill",
+            "group_mean"
+          ],
+          "fields_used": [
+            "fnd14_03_aijd",
+            "fnd14_1_vqe_hsc_hsc_slb_stl",
+            "capex",
+            "employee"
+          ]
+        },
+        {
+          "region": "USA",
+          "template": "not_equal(is_nan(fnd14_accel_filer_is_shell_company), sign(ts_delta(employee, 5)))",
+          "operators_used": [
+            "sign",
+            "not",
+            "equal",
+            "not_equal",
+            "is_nan",
+            "ts_delta"
+          ],
+          "fields_used": [
+            "fnd14_accel_filer_is_shell_company",
+            "employee"
+          ]
+        },
+        {
+          "region": "USA",
+          "template": "ts_corr(group_neutralize(ts_zscore(cogs, 45), fnd14_03_aijd), ts_delta(depre_amort, 10), 20)",
+          "operators_used": [
+            "or",
+            "ts_zscore",
+            "ts_corr",
+            "ts_delta",
+            "zscore",
+            "group_neutralize"
+          ],
+          "fields_used": [
+            "fnd14_03_aijd",
+            "cogs",
+            "depre_amort"
+          ]
+        }
+      ],
+      "GLB": [],
+      "EUR": [
+        {
+          "region": "EUR",
+          "template": "winsorize(group_neutralize(divide(cashflow_fin, debt_st), country), std=4)",
+          "operators_used": [
+            "divide",
+            "or",
+            "winsorize",
+            "group_neutralize"
+          ],
+          "fields_used": [
+            "cash",
+            "cashflow_fin",
+            "debt",
+            "debt_st"
+          ]
+        },
+        {
+          "region": "EUR",
+          "template": "trade_when(divide(assets_curr, debt), greater_equal(ts_step(1), 5), 0)",
+          "operators_used": [
+            "divide",
+            "equal",
+            "greater",
+            "greater_equal",
+            "ts_step",
+            "trade_when"
+          ],
+          "fields_used": [
+            "assets",
+            "assets_curr",
+            "debt"
+          ]
+        },
+        {
+          "region": "EUR",
+          "template": "normalize(group_min(divide(cash_st, accounts_payable), subindustry), false, 0.0)",
+          "operators_used": [
+            "min",
+            "divide",
+            "or",
+            "normalize",
+            "group_min"
+          ],
+          "fields_used": [
+            "accounts_payable",
+            "cash",
+            "cash_st"
+          ]
+        },
+        {
+          "region": "EUR",
+          "template": "last_diff_value(divide(cashflow_invst, accum_depre), 20)",
+          "operators_used": [
+            "divide",
+            "last_diff_value"
+          ],
+          "fields_used": [
+            "accum_depre",
+            "cash",
+            "cashflow_invst",
+            "depre"
+          ]
+        },
+        {
+          "region": "EUR",
+          "template": "and(not(is_nan(divide(cost_of_revenue, cogs))), less(divide(debt_lt, assets_curr_oth), 1))",
+          "operators_used": [
+            "divide",
+            "not",
+            "and",
+            "less",
+            "is_nan"
+          ],
+          "fields_used": [
+            "assets",
+            "assets_curr",
+            "assets_curr_oth",
+            "cogs",
+            "cost_of_revenue",
+            "debt",
+            "debt_lt"
+          ]
+        },
+        {
+          "region": "EUR",
+          "template": "or(greater_equal(divide(cashflow_op, depre), 0.5), less(ts_backfill(divide(assets_curr, debt), 60, 1, \"NAN\"), 2))",
+          "operators_used": [
+            "divide",
+            "less",
+            "equal",
+            "or",
+            "greater",
+            "greater_equal",
+            "ts_backfill"
+          ],
+          "fields_used": [
+            "assets",
+            "assets_curr",
+            "cash",
+            "cashflow_op",
+            "debt",
+            "depre"
+          ]
+        }
+      ]
+    },
+    "simulation_results": {
+      "USA": [
+        {
+          "template": "ts_zscore(ts_delta(capex, 20), 60)",
+          "region": "USA",
+          "sharpe": 0,
+          "fitness": 0,
+          "turnover": 0,
+          "returns": 0,
+          "drawdown": 0,
+          "margin": 0,
+          "longCount": 0,
+          "shortCount": 0,
+          "success": true,
+          "error_message": "",
+          "timestamp": 1757065171.7610574
+        }
+      ],
+      "EUR": [
+        {
+          "template": "last_diff_value(divide(cashflow_invst, accum_depre), 20)",
+          "region": "EUR",
+          "sharpe": 0,
+          "fitness": 0,
+          "turnover": 0,
+          "returns": 0,
+          "drawdown": 0,
+          "margin": 0,
+          "longCount": 0,
+          "shortCount": 0,
+          "success": true,
+          "error_message": "",
+          "timestamp": 1757065348.3644667
+        },
+        {
+          "template": "winsorize(group_neutralize(divide(cashflow_fin, debt_st), country), std=4)",
+          "region": "EUR",
+          "sharpe": 0,
+          "fitness": 0,
+          "turnover": 0,
+          "returns": 0,
+          "drawdown": 0,
+          "margin": 0,
+          "longCount": 0,
+          "shortCount": 0,
+          "success": true,
+          "error_message": "",
+          "timestamp": 1757065370.188961
+        },
+        {
+          "template": "trade_when(divide(assets_curr, debt), greater_equal(ts_step(1), 5), 0)",
+          "region": "EUR",
+          "sharpe": 0,
+          "fitness": 0,
+          "turnover": 0,
+          "returns": 0,
+          "drawdown": 0,
+          "margin": 0,
+          "longCount": 0,
+          "shortCount": 0,
+          "success": true,
+          "error_message": "",
+          "timestamp": 1757065420.248271
+        },
+        {
+          "template": "and(not(is_nan(divide(cost_of_revenue, cogs))), less(divide(debt_lt, assets_curr_oth), 1))",
+          "region": "EUR",
+          "sharpe": 0,
+          "fitness": 0,
+          "turnover": 0,
+          "returns": 0,
+          "drawdown": 0,
+          "margin": 0,
+          "longCount": 0,
+          "shortCount": 0,
+          "success": true,
+          "error_message": "",
+          "timestamp": 1757065420.8815913
+        }
+      ]
+    }
+  }
+}
