@@ -1618,8 +1618,13 @@ Generate {num_templates} templates:"""
         # Create negated version by adding minus sign
         negated_template = f"-({base_code})"
         
+        # Get valid fields for validation
+        data_fields = self.get_data_fields_for_region(region, delay)
+        valid_fields = [field['id'] for field in data_fields] if data_fields else []
+        
         # Validate the negated template syntax
-        if self.validate_template_syntax(negated_template):
+        is_valid, error_msg = self.validate_template_syntax(negated_template, valid_fields)
+        if is_valid:
             variation = {
                 'template': negated_template,
                 'region': region,
@@ -1632,7 +1637,7 @@ Generate {num_templates} templates:"""
             variations.append(variation)
             logger.info(f"Generated negation variation: {negated_template[:50]}...")
         else:
-            logger.warning(f"Negated template failed syntax validation: {negated_template[:50]}...")
+            logger.warning(f"Negated template failed syntax validation: {negated_template[:50]}... - {error_msg}")
         
         return variations
     
