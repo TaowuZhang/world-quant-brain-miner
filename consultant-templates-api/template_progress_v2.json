@@ -1,17 +1,17 @@
 {
-  "timestamp": 1757201540.7822406,
+  "timestamp": 1757202473.5706317,
   "total_regions": 5,
   "completed_regions": 0,
   "total_templates": 0,
   "completed_templates": 0,
   "total_simulations": 0,
-  "completed_simulations": 0,
-  "successful_simulations": 0,
+  "completed_simulations": 15,
+  "successful_simulations": 15,
   "failed_simulations": 0,
   "current_region": "",
   "current_phase": "",
-  "best_sharpe": 0.0,
-  "best_template": "",
+  "best_sharpe": 0.75,
+  "best_template": "group_neutralize(quantile(ts_sum(subtract(star_pm_...",
   "metadata": {
     "generated_at": "2025-09-07 01:30:24",
     "total_operators": 79,
@@ -25,6 +25,382 @@
     "templates_per_region": 8,
     "version": "2.0"
   },
-  "templates": {},
-  "simulation_results": {}
+  "templates": {
+    "CHN": [
+      {
+        "region": "CHN",
+        "template": "group_neutralize(rank(subtract(multiply(ts_zscore(mdl26_chng_rltv_t_hng_sng_30, 20), ts_mean(mdl175_02vbo, 60)), ts_delta(anl14_actvalue_ntp_fy0, 5))), subindustry)",
+        "operators_used": [
+          "subtract",
+          "multiply",
+          "or",
+          "ts_zscore",
+          "ts_mean",
+          "ts_delta",
+          "zscore",
+          "rank",
+          "group_neutralize"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "CHN",
+        "template": "ts_rank(signed_power(ts_av_diff(ebitda, 20), 0.5), 60)",
+        "operators_used": [
+          "signed_power",
+          "sign",
+          "power",
+          "ts_av_diff",
+          "ts_rank",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "CHN",
+        "template": "rank(ts_delta(ts_zscore(mdl26_chng_rltv_t_msc_pc_x_jp_30, 60), 20))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_delta",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      }
+    ],
+    "USA": [
+      {
+        "region": "USA",
+        "template": "rank(divide(ts_av_diff(oth432_actq_compustatdeltapredict_funda_mae, 60), ts_mean(oth432_apq_compustatdeltapredict_funda_predict, 20)))",
+        "operators_used": [
+          "divide",
+          "ts_mean",
+          "ts_av_diff",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "USA",
+        "template": "ts_rank(divide(ts_sum(mdl136_qes_etf_us_flow_net_pctvol, 20), ts_std_dev(mdl136_qes_etf_us_flow_net_pctvol, 20)), 60)",
+        "operators_used": [
+          "divide",
+          "ts_sum",
+          "ts_std_dev",
+          "ts_rank",
+          "rank"
+        ],
+        "fields_used": []
+      }
+    ],
+    "ASI": [
+      {
+        "region": "ASI",
+        "template": "group_neutralize(quantile(ts_sum(subtract(star_pm_region_rank, ts_delay(mdl26_chng_rltv_t_cntry_bnchmrk_30, 20), filter=true), 60), driver=uniform), country)",
+        "operators_used": [
+          "subtract",
+          "or",
+          "ts_sum",
+          "ts_delay",
+          "quantile",
+          "rank",
+          "group_neutralize"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "ASI",
+        "template": "normalize(rank(ts_delta(ts_mean(oth432_ebit_ttm_predict, 20), 5)), useStd = false, limit = 0.0)",
+        "operators_used": [
+          "or",
+          "ts_mean",
+          "ts_delta",
+          "normalize",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "ASI",
+        "template": "scale(ts_zscore(ts_av_diff(mdl26_chng_rltv_t_sx_300_30, 60), 20), longscale=1, shortscale=1)",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "scale",
+          "zscore"
+        ],
+        "fields_used": []
+      }
+    ],
+    "GLB": [
+      {
+        "region": "GLB",
+        "template": "ts_rank(ts_zscore(ts_delta(mdl26_60dy_srprs_lst_y_rnngs, 20), 60), 120)",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_delta",
+          "ts_rank",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      }
+    ],
+    "EUR": [
+      {
+        "region": "EUR",
+        "template": "ts_target_tvr_delta_limit(rank(winsorize(subtract(anl11_cit2reg_industryperc, anl11_creptcesger1tic, filter=true), std=4)), assets, lambda_min=0, lambda_max=1, target_tvr=0.1)",
+        "operators_used": [
+          "subtract",
+          "min",
+          "max",
+          "or",
+          "ts_target_tvr_delta_limit",
+          "winsorize",
+          "rank"
+        ],
+        "fields_used": []
+      }
+    ]
+  },
+  "simulation_results": {
+    "CHN": [
+      {
+        "template": "group_neutralize(rank(subtract(multiply(ts_zscore(mdl26_chng_rltv_t_hng_sng_30, 20), ts_mean(mdl175_02vbo, 60)), ts_delta(anl14_actvalue_ntp_fy0, 5))), subindustry)",
+        "region": "CHN",
+        "sharpe": -1.7,
+        "fitness": -1.07,
+        "turnover": 0.3076,
+        "returns": -0.1211,
+        "drawdown": 1.1966,
+        "margin": -0.000788,
+        "longCount": 327,
+        "shortCount": 306,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757201559.511804
+      },
+      {
+        "template": "ts_rank(signed_power(ts_av_diff(ebitda, 20), 0.5), 60)",
+        "region": "CHN",
+        "sharpe": -0.74,
+        "fitness": -0.46,
+        "turnover": 0.129,
+        "returns": -0.0497,
+        "drawdown": 0.6409,
+        "margin": -0.00077,
+        "longCount": 847,
+        "shortCount": 798,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757201819.046248
+      },
+      {
+        "template": "rank(ts_delta(ts_zscore(mdl26_chng_rltv_t_msc_pc_x_jp_30, 60), 20))",
+        "region": "CHN",
+        "sharpe": -1.58,
+        "fitness": -0.97,
+        "turnover": 0.2952,
+        "returns": -0.1119,
+        "drawdown": 1.1187,
+        "margin": -0.000758,
+        "longCount": 618,
+        "shortCount": 614,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757202192.9924693
+      }
+    ],
+    "USA": [
+      {
+        "template": "rank(divide(ts_av_diff(oth432_actq_compustatdeltapredict_funda_mae, 60), ts_mean(oth432_apq_compustatdeltapredict_funda_predict, 20)))",
+        "region": "USA",
+        "sharpe": -0.39,
+        "fitness": -0.1,
+        "turnover": 1.6201,
+        "returns": -0.1149,
+        "drawdown": 1.3652,
+        "margin": -0.000142,
+        "longCount": 13,
+        "shortCount": 13,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757201584.3336818
+      },
+      {
+        "template": "ts_rank(divide(ts_sum(mdl136_qes_etf_us_flow_net_pctvol, 20), ts_std_dev(mdl136_qes_etf_us_flow_net_pctvol, 20)), 60)",
+        "region": "USA",
+        "sharpe": -0.65,
+        "fitness": -0.18,
+        "turnover": 0.3908,
+        "returns": -0.0296,
+        "drawdown": 0.3085,
+        "margin": -0.000151,
+        "longCount": 1275,
+        "shortCount": 1281,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757202376.4872162
+      }
+    ],
+    "ASI": [
+      {
+        "template": "group_neutralize(quantile(ts_sum(subtract(star_pm_region_rank, ts_delay(mdl26_chng_rltv_t_cntry_bnchmrk_30, 20), filter=true), 60), driver=uniform), country)",
+        "region": "ASI",
+        "sharpe": 0.66,
+        "fitness": 0.36,
+        "turnover": 0.0199,
+        "returns": 0.0366,
+        "drawdown": 0.1851,
+        "margin": 0.003669,
+        "longCount": 1639,
+        "shortCount": 1638,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757201667.522065
+      },
+      {
+        "template": "group_neutralize(quantile(ts_sum(subtract(star_pm_region_rank, ts_delay(mdl26_chng_rltv_t_cntry_bnchmrk_30, 20), filter=true), 60), driver=uniform), country)",
+        "region": "ASI",
+        "sharpe": 0.75,
+        "fitness": 0.49,
+        "turnover": 0.019,
+        "returns": 0.0524,
+        "drawdown": 0.186,
+        "margin": 0.005522,
+        "longCount": 1640,
+        "shortCount": 1638,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757202122.8432586
+      },
+      {
+        "template": "group_neutralize(quantile(ts_sum(subtract(star_pm_region_rank, ts_delay(mdl26_chng_rltv_t_cntry_bnchmrk_30, 20), filter=true), 60), driver=uniform), country)",
+        "region": "ASI",
+        "sharpe": 0.75,
+        "fitness": 0.49,
+        "turnover": 0.019,
+        "returns": 0.0524,
+        "drawdown": 0.186,
+        "margin": 0.005522,
+        "longCount": 1640,
+        "shortCount": 1638,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757202138.8624325
+      },
+      {
+        "template": "normalize(rank(ts_delta(ts_mean(oth432_ebit_ttm_predict, 20), 5)), useStd = false, limit = 0.0)",
+        "region": "ASI",
+        "sharpe": 0.4,
+        "fitness": 0.17,
+        "turnover": 0.0938,
+        "returns": 0.0226,
+        "drawdown": 0.1899,
+        "margin": 0.000481,
+        "longCount": 1702,
+        "shortCount": 1709,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757202256.966594
+      },
+      {
+        "template": "group_neutralize(quantile(ts_sum(subtract(star_pm_region_rank, ts_delay(mdl26_chng_rltv_t_cntry_bnchmrk_30, 20), filter=true), 60), driver=uniform), country)",
+        "region": "ASI",
+        "sharpe": 0.51,
+        "fitness": 0.23,
+        "turnover": 0.0208,
+        "returns": 0.0259,
+        "drawdown": 0.1678,
+        "margin": 0.002491,
+        "longCount": 1613,
+        "shortCount": 1664,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757202329.9372394
+      },
+      {
+        "template": "group_neutralize(quantile(ts_sum(subtract(star_pm_region_rank, ts_delay(mdl26_chng_rltv_t_cntry_bnchmrk_30, 20), filter=true), 60), driver=uniform), country)",
+        "region": "ASI",
+        "sharpe": 0.75,
+        "fitness": 0.49,
+        "turnover": 0.019,
+        "returns": 0.0524,
+        "drawdown": 0.186,
+        "margin": 0.005522,
+        "longCount": 1640,
+        "shortCount": 1638,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757202338.909082
+      },
+      {
+        "template": "scale(ts_zscore(ts_av_diff(mdl26_chng_rltv_t_sx_300_30, 60), 20), longscale=1, shortscale=1)",
+        "region": "ASI",
+        "sharpe": -0.28,
+        "fitness": -0.08,
+        "turnover": 0.1973,
+        "returns": -0.0172,
+        "drawdown": 0.3775,
+        "margin": -0.000174,
+        "longCount": 1346,
+        "shortCount": 1360,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757202346.1287029
+      },
+      {
+        "template": "group_neutralize(quantile(ts_sum(subtract(star_pm_region_rank, ts_delay(mdl26_chng_rltv_t_cntry_bnchmrk_30, 20), filter=true), 60), driver=uniform), country)",
+        "region": "ASI",
+        "sharpe": 0.51,
+        "fitness": 0.23,
+        "turnover": 0.0208,
+        "returns": 0.0259,
+        "drawdown": 0.1678,
+        "margin": 0.002491,
+        "longCount": 1613,
+        "shortCount": 1664,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757202423.0671077
+      }
+    ],
+    "GLB": [
+      {
+        "template": "ts_rank(ts_zscore(ts_delta(mdl26_60dy_srprs_lst_y_rnngs, 20), 60), 120)",
+        "region": "GLB",
+        "sharpe": -0.21,
+        "fitness": -0.05,
+        "turnover": 0.1192,
+        "returns": -0.0066,
+        "drawdown": 0.1154,
+        "margin": -0.000111,
+        "longCount": 409,
+        "shortCount": 400,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757201820.1129034
+      }
+    ],
+    "EUR": [
+      {
+        "template": "ts_target_tvr_delta_limit(rank(winsorize(subtract(anl11_cit2reg_industryperc, anl11_creptcesger1tic, filter=true), std=4)), assets, lambda_min=0, lambda_max=1, target_tvr=0.1)",
+        "region": "EUR",
+        "sharpe": 0.18,
+        "fitness": 0.02,
+        "turnover": 0.0987,
+        "returns": 0.001,
+        "drawdown": 0.0168,
+        "margin": 2e-05,
+        "longCount": 48,
+        "shortCount": 49,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757202381.4855433
+      }
+    ]
+  }
 }
