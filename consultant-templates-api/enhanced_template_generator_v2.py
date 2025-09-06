@@ -89,6 +89,21 @@ class RegionConfig:
     universe: str
     delay: int
     max_trade: bool = False
+    neutralization_options: List[str] = None  # Available neutralization options for this region
+    
+    def __post_init__(self):
+        if self.neutralization_options is None:
+            # Default neutralization options by region
+            if self.region == "USA":
+                self.neutralization_options = ["INDUSTRY", "SUBINDUSTRY", "SECTOR", "COUNTRY", "NONE"]
+            elif self.region == "EUR":
+                self.neutralization_options = ["INDUSTRY", "SUBINDUSTRY", "SECTOR", "COUNTRY", "NONE"]
+            elif self.region == "CHN":
+                self.neutralization_options = ["INDUSTRY", "SUBINDUSTRY", "SECTOR", "COUNTRY", "NONE"]
+            elif self.region == "ASI":
+                self.neutralization_options = ["INDUSTRY", "SUBINDUSTRY", "SECTOR", "COUNTRY", "NONE"]
+            else:
+                self.neutralization_options = ["INDUSTRY", "NONE"]
 
 @dataclass
 class SimulationSettings:
@@ -124,6 +139,7 @@ class TemplateResult:
     shortCount: int = 0
     success: bool = False
     error_message: str = ""
+    neutralization: str = "INDUSTRY"  # Track neutralization used
     timestamp: float = 0.0
 
 class MultiArmBandit:
@@ -201,6 +217,61 @@ class MultiArmBandit:
         if arm_id not in self.arm_stats:
             return {'pulls': 0, 'avg_reward': 0.0, 'confidence_interval': (0.0, 1.0)}
         return self.arm_stats[arm_id].copy()
+
+def calculate_enhanced_reward(result: TemplateResult) -> float:
+    """
+    Calculate enhanced reward based on multiple criteria:
+    - Margin: >5bps good, >20bps excellent
+    - Turnover: <30 very good, <50 acceptable
+    - Return/Drawdown ratio: should be >1
+    - Sharpe ratio: base reward
+    """
+    if not result.success:
+        return 0.0
+    
+    # Base reward from Sharpe ratio
+    base_reward = max(0, result.sharpe)
+    
+    # Margin bonus (in basis points)
+    margin_bps = result.margin * 10000  # Convert to basis points
+    margin_bonus = 0.0
+    if margin_bps >= 20:
+        margin_bonus = 0.5  # Excellent margin
+    elif margin_bps >= 5:
+        margin_bonus = 0.2  # Good margin
+    elif margin_bps > 0:
+        margin_bonus = 0.1  # Some margin
+    
+    # Turnover penalty/bonus
+    turnover_bonus = 0.0
+    if result.turnover <= 30:
+        turnover_bonus = 0.3  # Very good turnover
+    elif result.turnover <= 50:
+        turnover_bonus = 0.1  # Acceptable turnover
+    else:
+        turnover_bonus = -0.2  # Penalty for high turnover
+    
+    # Return/Drawdown ratio bonus
+    return_drawdown_bonus = 0.0
+    if result.drawdown > 0 and result.returns > result.drawdown:
+        ratio = result.returns / result.drawdown
+        if ratio >= 2.0:
+            return_drawdown_bonus = 0.4  # Excellent ratio
+        elif ratio >= 1.5:
+            return_drawdown_bonus = 0.2  # Good ratio
+        elif ratio >= 1.0:
+            return_drawdown_bonus = 0.1  # Acceptable ratio
+    
+    # Fitness bonus (if available)
+    fitness_bonus = 0.0
+    if result.fitness > 0:
+        fitness_bonus = min(0.2, result.fitness * 0.1)  # Cap fitness bonus
+    
+    # Calculate total reward
+    total_reward = base_reward + margin_bonus + turnover_bonus + return_drawdown_bonus + fitness_bonus
+    
+    # Ensure non-negative reward
+    return max(0, total_reward)
 
 
 class ProgressTracker:
@@ -337,6 +408,9 @@ class EnhancedTemplateGeneratorV2:
             'templates': {},
             'simulation_results': {}
         }
+        
+        # Hopeful alphas storage for negation exploitation
+        self.hopeful_alphas = []
         
         # Load previous progress if it exists (for exploit data)
         self.load_progress()
@@ -1258,6 +1332,7 @@ Generate {num_templates} templates:"""
                                 longCount=longCount,
                                 shortCount=shortCount,
                                 success=is_truly_successful,
+                                neutralization=settings.neutralization,
                                 timestamp=time.time()
                             )
                             results.append(result)
@@ -1384,15 +1459,15 @@ Generate {num_templates} templates:"""
         if successful_results:
             logger.info(f"💾 Found {len(successful_results)} successful templates")
             
-            # Update bandit with rewards
+            # Update bandit with rewards using enhanced calculation
             for result in successful_results:
                 # Extract main operator from template
                 main_operator = self.extract_main_operator(result.template)
                 if main_operator:
-                    # Use sharpe ratio as reward
-                    reward = max(0, result.sharpe)  # Ensure non-negative reward
+                    # Use enhanced reward calculation
+                    reward = calculate_enhanced_reward(result)
                     self.bandit.update_arm(main_operator, reward)
-                    logger.info(f"Updated bandit: {main_operator} -> reward={reward:.3f}")
+                    logger.info(f"Updated bandit: {main_operator} -> enhanced_reward={reward:.3f}")
             
             # Add to results
             if region not in self.all_results['simulation_results']:
@@ -1503,6 +1578,98 @@ Generate {num_templates} templates:"""
         logger.info(f"Generated {len(variations)} variations for template: {base_code[:50]}... (from {len(field_names)} available fields)")
         return variations
     
+    def generate_neutralization_variations(self, base_template, region, delay):
+        """Generate variations of a successful template with different neutralization settings"""
+        # Get region-specific neutralization options
+        region_config = self.region_configs.get(region)
+        if not region_config or not region_config.neutralization_options:
+            logger.warning(f"No neutralization options available for region {region}")
+            return []
+        
+        neutralization_options = region_config.neutralization_options
+        variations = []
+        
+        # Create variations with different neutralization settings
+        for neutralization in neutralization_options:
+            if neutralization != base_template.get('neutralization', 'INDUSTRY'):
+                variation = {
+                    'template': base_template['template'],
+                    'region': region,
+                    'operators_used': base_template.get('operators_used', []),
+                    'fields_used': base_template.get('fields_used', []),
+                    'neutralization': neutralization,
+                    'variation_type': 'neutralization'
+                }
+                variations.append(variation)
+        
+        logger.info(f"Generated {len(variations)} neutralization variations for region {region}: {neutralization_options}")
+        return variations
+    
+    def generate_negation_variations(self, base_template, region, delay):
+        """Generate negated variations of a successful template to test inverse strategies"""
+        base_code = base_template['template']
+        variations = []
+        
+        # Check if the template is already negated (starts with minus)
+        if base_code.strip().startswith('-'):
+            logger.info(f"Template already negated, skipping negation variation: {base_code[:50]}...")
+            return []
+        
+        # Create negated version by adding minus sign
+        negated_template = f"-({base_code})"
+        
+        # Validate the negated template syntax
+        if self.validate_template_syntax(negated_template):
+            variation = {
+                'template': negated_template,
+                'region': region,
+                'operators_used': base_template.get('operators_used', []),
+                'fields_used': base_template.get('fields_used', []),
+                'neutralization': base_template.get('neutralization', 'INDUSTRY'),
+                'variation_type': 'negation',
+                'original_template': base_code
+            }
+            variations.append(variation)
+            logger.info(f"Generated negation variation: {negated_template[:50]}...")
+        else:
+            logger.warning(f"Negated template failed syntax validation: {negated_template[:50]}...")
+        
+        return variations
+    
+    def is_hopeful_alpha(self, result: TemplateResult) -> bool:
+        """
+        Check if an alpha is 'hopeful' - has negative metrics but absolute values above threshold
+        These are candidates for negation exploitation
+        """
+        if not result.success:
+            return False
+        
+        # Check if any key metrics are negative but have good absolute values
+        hopeful_conditions = []
+        
+        # Sharpe ratio: negative but absolute value > 0.5
+        if result.sharpe < 0 and abs(result.sharpe) > 1.25:
+            hopeful_conditions.append(f"Sharpe={result.sharpe:.3f} (abs={abs(result.sharpe):.3f})")
+        
+        # Fitness: negative but absolute value > 0.3
+        if result.fitness < 0 and abs(result.fitness) > 1:
+            hopeful_conditions.append(f"Fitness={result.fitness:.3f} (abs={abs(result.fitness):.3f})")
+        
+        # Returns: negative but absolute value > 0.1
+        if result.returns < 0 and abs(result.returns) > 0.2:
+            hopeful_conditions.append(f"Returns={result.returns:.3f} (abs={abs(result.returns):.3f})")
+        
+        # Margin: negative but absolute value > 0.002 (20bps)
+        if result.margin < 0 and abs(result.margin) > 0.002:
+            hopeful_conditions.append(f"Margin={result.margin:.4f} (abs={abs(result.margin):.4f})")
+        
+        if hopeful_conditions:
+            logger.info(f"🎯 HOPEFUL ALPHA detected: {', '.join(hopeful_conditions)}")
+            logger.info(f"  Template: {result.template[:50]}...")
+            return True
+        
+        return False
+    
     def _process_completed_futures(self):
         """Process completed futures and update bandit"""
         completed_futures = []
@@ -1610,15 +1777,35 @@ Generate {num_templates} templates:"""
             )
     
     def _exploit_and_simulate_concurrent(self, best_template: Dict) -> Optional[TemplateResult]:
-        """CONCURRENTLY exploit existing template and simulate it"""
+        """CONCURRENTLY exploit existing template and simulate it with enhanced variations"""
         try:
             region = best_template['region']
             delay = self.select_optimal_delay(region)
             
-            # Generate variations of the successful template
-            variations = self.generate_template_variations(best_template, region, delay)
+            # Generate all types of variations
+            field_variations = self.generate_template_variations(best_template, region, delay)
+            neutralization_variations = self.generate_neutralization_variations(best_template, region, delay)
+            negation_variations = self.generate_negation_variations(best_template, region, delay)
             
-            if not variations:
+            # Also check for hopeful alphas in the same region for negation exploitation
+            hopeful_negation_variations = []
+            for hopeful_alpha in self.hopeful_alphas:
+                if hopeful_alpha['region'] == region:
+                    # Create negation variation from hopeful alpha
+                    hopeful_template = {
+                        'template': hopeful_alpha['template'],
+                        'region': hopeful_alpha['region'],
+                        'operators_used': [],
+                        'fields_used': [],
+                        'neutralization': hopeful_alpha['neutralization']
+                    }
+                    hopeful_negations = self.generate_negation_variations(hopeful_template, region, delay)
+                    hopeful_negation_variations.extend(hopeful_negations)
+            
+            # Combine all variations
+            all_variations = field_variations + neutralization_variations + negation_variations + hopeful_negation_variations
+            
+            if not all_variations:
                 logger.warning(f"No variations generated for {region}")
                 return TemplateResult(
                     template=best_template.get('template', ''),
@@ -1629,8 +1816,19 @@ Generate {num_templates} templates:"""
                     timestamp=time.time()
                 )
             
-            variation = variations[0]
-            logger.info(f"🎯 EXPLOITING template variation: {variation['template'][:50]}...")
+            # Randomly select a variation type
+            variation = random.choice(all_variations)
+            variation_type = variation.get('variation_type', 'field')
+            
+            logger.info(f"🎯 EXPLOITING {variation_type} variation: {variation['template'][:50]}...")
+            if variation_type == 'neutralization':
+                logger.info(f"  Using neutralization: {variation.get('neutralization', 'INDUSTRY')}")
+            elif variation_type == 'negation':
+                original_template = variation.get('original_template', '')
+                if original_template:
+                    logger.info(f"  Testing negated version of: {original_template[:50]}...")
+                else:
+                    logger.info(f"  Testing negation variation from hopeful alpha")
             
             # Simulate the variation CONCURRENTLY
             return self._simulate_template_concurrent(variation, region, delay)
@@ -1650,6 +1848,8 @@ Generate {num_templates} templates:"""
         """CONCURRENTLY simulate a single template"""
         try:
             # Create simulation data with all required fields
+            # Use neutralization from template variation if available
+            neutralization = template.get('neutralization', 'INDUSTRY')
             simulation_data = {
                 'type': 'REGULAR',
                 'settings': {
@@ -1658,7 +1858,7 @@ Generate {num_templates} templates:"""
                     'universe': self.region_configs[region].universe,
                     'delay': delay,
                     'decay': 0,
-                    'neutralization': 'INDUSTRY',
+                    'neutralization': neutralization,
                     'truncation': 0.08,
                     'pasteurization': 'ON',
                     'unitHandling': 'VERIFY',
@@ -1865,13 +2065,57 @@ Generate {num_templates} templates:"""
         logger.info("All futures completed")
     
     def _update_bandit_with_result(self, result):
-        """Update the bandit with simulation result"""
+        """Update the bandit with simulation result using enhanced reward calculation"""
         if result.success:
             main_operator = self.extract_main_operator(result.template)
             if main_operator:
-                reward = max(0, result.sharpe)
+                # Use enhanced reward calculation
+                reward = calculate_enhanced_reward(result)
                 self.bandit.update_arm(main_operator, reward)
-                logger.info(f"Updated bandit: {main_operator} -> reward={reward:.3f}")
+                
+                # Log detailed reward breakdown
+                margin_bps = result.margin * 10000
+                turnover_bonus = 0.3 if result.turnover <= 30 else (0.1 if result.turnover <= 50 else -0.2)
+                return_drawdown_ratio = result.returns / result.drawdown if result.drawdown > 0 else 0
+                
+                logger.info(f"Updated bandit: {main_operator} -> enhanced_reward={reward:.3f}")
+                logger.info(f"  Breakdown: Sharpe={result.sharpe:.3f}, Margin={margin_bps:.1f}bps, "
+                          f"Turnover={result.turnover:.1f}, R/D={return_drawdown_ratio:.2f}")
+                
+                # Check if this is a hopeful alpha (negative metrics with good absolute values)
+                if self.is_hopeful_alpha(result):
+                    # Store this as a candidate for negation exploitation
+                    self._store_hopeful_alpha(result)
+        else:
+            # Even for failed results, check if they might be hopeful
+            if self.is_hopeful_alpha(result):
+                logger.info(f"🎯 Failed but hopeful alpha detected: {result.template[:50]}...")
+                self._store_hopeful_alpha(result)
+    
+    def _store_hopeful_alpha(self, result: TemplateResult):
+        """Store a hopeful alpha for potential negation exploitation"""
+        hopeful_alpha = {
+            'template': result.template,
+            'region': result.region,
+            'sharpe': result.sharpe,
+            'fitness': result.fitness,
+            'returns': result.returns,
+            'margin': result.margin,
+            'turnover': result.turnover,
+            'drawdown': result.drawdown,
+            'neutralization': result.neutralization,
+            'timestamp': time.time(),
+            'original_success': result.success
+        }
+        
+        # Add to hopeful alphas list (keep last 20)
+        self.hopeful_alphas.append(hopeful_alpha)
+        if len(self.hopeful_alphas) > 20:
+            self.hopeful_alphas.pop(0)  # Remove oldest
+        
+        logger.info(f"💾 Stored hopeful alpha for negation exploitation: {result.template[:50]}...")
+        logger.info(f"  Metrics: Sharpe={result.sharpe:.3f}, Fitness={result.fitness:.3f}, "
+                   f"Returns={result.returns:.3f}, Margin={result.margin:.4f}")
     
     def _add_to_results(self, result):
         """Add result to the results collection"""
