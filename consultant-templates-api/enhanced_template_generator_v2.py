@@ -442,6 +442,10 @@ class EnhancedTemplateGeneratorV2:
         # Hopeful alphas storage for negation exploitation
         self.hopeful_alphas = []
         
+        # Template quality tracking for PnL data quality
+        self.template_quality_tracker = {}  # {template_hash: {'zero_pnl_count': int, 'total_attempts': int}}
+        self.max_zero_pnl_attempts = 3  # Delete template after 3 zero PnL occurrences
+        
         # Load previous progress if it exists (for exploit data)
         self.load_progress()
     
@@ -1020,6 +1024,9 @@ Generate {num_templates} templates:"""
                         'sharpe': result.get('sharpe', 0)
                     })
         
+        # Filter out blacklisted templates (those with poor PnL quality)
+        all_successful_templates = self.filter_blacklisted_templates(all_successful_templates)
+        
         # Decide between explore and exploit
         if len(all_successful_templates) < 3:  # Need at least 3 successful templates to start exploiting
             # Explore: generate new template
@@ -1347,7 +1354,13 @@ Generate {num_templates} templates:"""
                                 shortCount > 0  # Has short positions
                             )
                             
-                            is_truly_successful = has_meaningful_metrics
+                            # Check PnL data quality for successful simulations
+                            pnl_quality_ok = True
+                            if has_meaningful_metrics:
+                                pnl_quality_ok = self.track_template_quality(template_data['template'], alpha_id)
+                            
+                            # Only consider truly successful if both metrics and PnL quality are good
+                            is_truly_successful = has_meaningful_metrics and pnl_quality_ok
                             
                             result = TemplateResult(
                                 template=template_data['template'],
@@ -1375,11 +1388,17 @@ Generate {num_templates} templates:"""
                                 logger.info(f"✅ Template simulation completed successfully: {template_data['template'][:50]}...")
                                 logger.info(f"📊 Alpha {alpha_id} Performance: Sharpe={sharpe}, Fitness={fitness}, Turnover={turnover}, Returns={returns}")
                                 logger.info(f"📊 Alpha {alpha_id} Positions: Long={longCount}, Short={shortCount}")
+                                logger.info(f"📊 Alpha {alpha_id} PnL Quality: Good")
                             else:
-                                logger.info(f"⚠️ Template simulation completed but with zero/meaningless values: {template_data['template'][:50]}...")
-                                logger.info(f"📊 Alpha {alpha_id} Values: Sharpe={sharpe}, Fitness={fitness}, Turnover={turnover}, Returns={returns}")
-                                logger.info(f"📊 Alpha {alpha_id} Positions: Long={longCount}, Short={shortCount}")
-                                logger.info(f"📊 Alpha {alpha_id} Success criteria: has_meaningful_metrics={has_meaningful_metrics}")
+                                if has_meaningful_metrics and not pnl_quality_ok:
+                                    logger.info(f"⚠️ Template simulation completed with good metrics but poor PnL quality: {template_data['template'][:50]}...")
+                                    logger.info(f"📊 Alpha {alpha_id} Values: Sharpe={sharpe}, Fitness={fitness}, Turnover={turnover}, Returns={returns}")
+                                    logger.info(f"📊 Alpha {alpha_id} PnL Quality: Poor - No reward given")
+                                else:
+                                    logger.info(f"⚠️ Template simulation completed but with zero/meaningless values: {template_data['template'][:50]}...")
+                                    logger.info(f"📊 Alpha {alpha_id} Values: Sharpe={sharpe}, Fitness={fitness}, Turnover={turnover}, Returns={returns}")
+                                    logger.info(f"📊 Alpha {alpha_id} Positions: Long={longCount}, Short={shortCount}")
+                                    logger.info(f"📊 Alpha {alpha_id} Success criteria: has_meaningful_metrics={has_meaningful_metrics}")
                             
                         elif status in ['FAILED', 'ERROR']:
                             template_data = template_mapping[progress_url]
@@ -1707,6 +1726,123 @@ Generate {num_templates} templates:"""
             return True
         
         return False
+    
+    def check_pnl_data_quality(self, alpha_id: str) -> Tuple[bool, str]:
+        """
+        Check PnL data quality for an alpha
+        Returns: (is_good_quality, reason)
+        """
+        try:
+            # Fetch PnL data from WorldQuant API
+            pnl_url = f'https://api.worldquantbrain.com/alphas/{alpha_id}/recordsets/pnl'
+            response = self.sess.get(pnl_url)
+            
+            if response.status_code != 200:
+                return False, f"Failed to fetch PnL data: {response.status_code}"
+            
+            pnl_data = response.json()
+            records = pnl_data.get('records', [])
+            
+            if not records:
+                return False, "No PnL records found"
+            
+            # Analyze PnL data quality
+            total_records = len(records)
+            zero_pnl_count = 0
+            non_zero_pnl_count = 0
+            total_pnl_sum = 0.0
+            
+            for record in records:
+                if len(record) >= 2:  # Ensure we have at least date and pnl
+                    pnl_value = record[1]  # PnL is the second element
+                    if pnl_value == 0.0:
+                        zero_pnl_count += 1
+                    else:
+                        non_zero_pnl_count += 1
+                        total_pnl_sum += abs(pnl_value)
+            
+            # Calculate quality metrics
+            zero_pnl_ratio = zero_pnl_count / total_records if total_records > 0 else 1.0
+            avg_non_zero_pnl = total_pnl_sum / non_zero_pnl_count if non_zero_pnl_count > 0 else 0.0
+            
+            # Quality criteria
+            if zero_pnl_ratio > 0.8:  # More than 80% zeros
+                return False, f"Too many zero PnL values: {zero_pnl_ratio:.1%} ({zero_pnl_count}/{total_records})"
+            
+            if non_zero_pnl_count < 10:  # Less than 10 non-zero values
+                return False, f"Insufficient non-zero PnL data: {non_zero_pnl_count} values"
+            
+            if avg_non_zero_pnl < 0.001:  # Very small PnL values
+                return False, f"PnL values too small: avg={avg_non_zero_pnl:.6f}"
+            
+            # Good quality
+            return True, f"Good PnL quality: {non_zero_pnl_count}/{total_records} non-zero values, avg={avg_non_zero_pnl:.4f}"
+            
+        except Exception as e:
+            return False, f"Error checking PnL quality: {str(e)}"
+    
+    def track_template_quality(self, template: str, alpha_id: str) -> bool:
+        """
+        Track template quality based on PnL data
+        Returns: True if template should be kept, False if it should be deleted
+        """
+        # Create template hash for tracking
+        template_hash = hash(template)
+        
+        # Check PnL data quality
+        is_good_quality, reason = self.check_pnl_data_quality(alpha_id)
+        
+        # Initialize tracking if not exists
+        if template_hash not in self.template_quality_tracker:
+            self.template_quality_tracker[template_hash] = {
+                'zero_pnl_count': 0,
+                'total_attempts': 0,
+                'template': template
+            }
+        
+        tracker = self.template_quality_tracker[template_hash]
+        tracker['total_attempts'] += 1
+        
+        if not is_good_quality:
+            tracker['zero_pnl_count'] += 1
+            logger.warning(f"⚠️ Poor PnL quality for template: {template[:50]}...")
+            logger.warning(f"   Reason: {reason}")
+            logger.warning(f"   Zero PnL count: {tracker['zero_pnl_count']}/{self.max_zero_pnl_attempts}")
+            
+            # Check if template should be deleted
+            if tracker['zero_pnl_count'] >= self.max_zero_pnl_attempts:
+                logger.error(f"🗑️ DELETING template due to poor PnL quality: {template[:50]}...")
+                logger.error(f"   Total attempts: {tracker['total_attempts']}, Zero PnL: {tracker['zero_pnl_count']}")
+                return False  # Delete template
+        else:
+            logger.info(f"✅ Good PnL quality for template: {template[:50]}...")
+            logger.info(f"   {reason}")
+        
+        return True  # Keep template
+    
+    def is_template_blacklisted(self, template: str) -> bool:
+        """Check if a template is blacklisted due to poor PnL quality"""
+        template_hash = hash(template)
+        if template_hash in self.template_quality_tracker:
+            tracker = self.template_quality_tracker[template_hash]
+            return tracker['zero_pnl_count'] >= self.max_zero_pnl_attempts
+        return False
+    
+    def filter_blacklisted_templates(self, templates: List[Dict]) -> List[Dict]:
+        """Filter out blacklisted templates from a list"""
+        filtered_templates = []
+        blacklisted_count = 0
+        
+        for template in templates:
+            if not self.is_template_blacklisted(template.get('template', '')):
+                filtered_templates.append(template)
+            else:
+                blacklisted_count += 1
+        
+        if blacklisted_count > 0:
+            logger.info(f"🚫 Filtered out {blacklisted_count} blacklisted templates due to poor PnL quality")
+        
+        return filtered_templates
     
     def _process_completed_futures(self):
         """Process completed futures and update bandit"""
