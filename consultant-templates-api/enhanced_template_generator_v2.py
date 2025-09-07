@@ -143,12 +143,16 @@ class TemplateResult:
     timestamp: float = 0.0
 
 class MultiArmBandit:
-    """Multi-arm bandit for explore vs exploit decisions"""
+    """Multi-arm bandit for explore vs exploit decisions with time decay"""
     
-    def __init__(self, exploration_rate: float = 0.3, confidence_level: float = 0.95):
+    def __init__(self, exploration_rate: float = 0.3, confidence_level: float = 0.95, 
+                 decay_rate: float = 0.001, decay_interval: int = 100):
         self.exploration_rate = exploration_rate
         self.confidence_level = confidence_level
         self.arm_stats = {}  # {arm_id: {'pulls': int, 'rewards': list, 'avg_reward': float}}
+        self.decay_rate = decay_rate  # How much to decay rewards per interval
+        self.decay_interval = decay_interval  # Apply decay every N pulls
+        self.total_pulls = 0  # Track total pulls for decay timing
     
     def add_arm(self, arm_id: str):
         """Add a new arm to the bandit"""
@@ -160,14 +164,31 @@ class MultiArmBandit:
                 'confidence_interval': (0.0, 1.0)
             }
     
+    def calculate_time_decay_factor(self) -> float:
+        """Calculate time decay factor based on total pulls"""
+        # Apply exponential decay: factor = e^(-decay_rate * (total_pulls / decay_interval))
+        # This ensures rewards gradually decrease over time to prevent overfitting
+        decay_steps = self.total_pulls / self.decay_interval
+        decay_factor = math.exp(-self.decay_rate * decay_steps)
+        return max(0.1, decay_factor)  # Minimum decay factor of 0.1 to prevent complete decay
+    
     def update_arm(self, arm_id: str, reward: float):
-        """Update arm statistics with new reward"""
+        """Update arm statistics with new reward and apply time decay"""
         if arm_id not in self.arm_stats:
             self.add_arm(arm_id)
         
+        # Increment total pulls for decay calculation
+        self.total_pulls += 1
+        
+        # Calculate time decay factor
+        time_decay_factor = self.calculate_time_decay_factor()
+        
+        # Apply time decay to the reward
+        decayed_reward = reward * time_decay_factor
+        
         stats = self.arm_stats[arm_id]
         stats['pulls'] += 1
-        stats['rewards'].append(reward)
+        stats['rewards'].append(decayed_reward)
         stats['avg_reward'] = np.mean(stats['rewards'])
         
         # Calculate confidence interval
@@ -179,6 +200,11 @@ class MultiArmBandit:
                 max(0, stats['avg_reward'] - margin),
                 min(1, stats['avg_reward'] + margin)
             )
+        
+        # Log decay information periodically
+        if self.total_pulls % self.decay_interval == 0:
+            logger.info(f"🕒 Time decay applied: factor={time_decay_factor:.4f}, total_pulls={self.total_pulls}")
+            logger.info(f"   Original reward: {reward:.3f} -> Decayed reward: {decayed_reward:.3f}")
     
     def choose_action(self, available_arms: List[str]) -> Tuple[str, str]:
         """
@@ -218,13 +244,14 @@ class MultiArmBandit:
             return {'pulls': 0, 'avg_reward': 0.0, 'confidence_interval': (0.0, 1.0)}
         return self.arm_stats[arm_id].copy()
 
-def calculate_enhanced_reward(result: TemplateResult) -> float:
+def calculate_enhanced_reward(result: TemplateResult, time_decay_factor: float = 1.0) -> float:
     """
-    Calculate enhanced reward based on multiple criteria:
+    Calculate enhanced reward based on multiple criteria with time decay:
     - Margin: >5bps good, >20bps excellent
     - Turnover: <30 very good, <50 acceptable
     - Return/Drawdown ratio: should be >1
     - Sharpe ratio: base reward
+    - Time decay: gradually reduces reward over time to prevent overfitting
     """
     if not result.success:
         return 0.0
@@ -267,11 +294,14 @@ def calculate_enhanced_reward(result: TemplateResult) -> float:
     if result.fitness > 0:
         fitness_bonus = min(0.2, result.fitness * 0.1)  # Cap fitness bonus
     
-    # Calculate total reward
+    # Calculate total reward before time decay
     total_reward = base_reward + margin_bonus + turnover_bonus + return_drawdown_bonus + fitness_bonus
     
+    # Apply time decay factor (gradually reduces reward over time)
+    decayed_reward = total_reward * time_decay_factor
+    
     # Ensure non-negative reward
-    return max(0, total_reward)
+    return max(0, decayed_reward)
 
 
 class ProgressTracker:
@@ -351,7 +381,7 @@ class EnhancedTemplateGeneratorV2:
         self.progress_file = progress_file
         self.results_file = results_file
         self.progress_tracker = ProgressTracker()
-        self.bandit = MultiArmBandit(exploration_rate=0.3)
+        self.bandit = MultiArmBandit(exploration_rate=0.3, decay_rate=0.001, decay_interval=100)
         
         # TRUE CONCURRENT execution using ThreadPoolExecutor
         self.executor = ThreadPoolExecutor(max_workers=self.max_concurrent)
@@ -1459,15 +1489,18 @@ Generate {num_templates} templates:"""
         if successful_results:
             logger.info(f"💾 Found {len(successful_results)} successful templates")
             
-            # Update bandit with rewards using enhanced calculation
+            # Update bandit with rewards using enhanced calculation with time decay
             for result in successful_results:
                 # Extract main operator from template
                 main_operator = self.extract_main_operator(result.template)
                 if main_operator:
-                    # Use enhanced reward calculation
-                    reward = calculate_enhanced_reward(result)
+                    # Calculate time decay factor
+                    time_decay_factor = self.bandit.calculate_time_decay_factor()
+                    
+                    # Use enhanced reward calculation with time decay
+                    reward = calculate_enhanced_reward(result, time_decay_factor)
                     self.bandit.update_arm(main_operator, reward)
-                    logger.info(f"Updated bandit: {main_operator} -> enhanced_reward={reward:.3f}")
+                    logger.info(f"Updated bandit: {main_operator} -> enhanced_reward={reward:.3f} (decay_factor={time_decay_factor:.4f})")
             
             # Add to results
             if region not in self.all_results['simulation_results']:
@@ -2070,12 +2103,15 @@ Generate {num_templates} templates:"""
         logger.info("All futures completed")
     
     def _update_bandit_with_result(self, result):
-        """Update the bandit with simulation result using enhanced reward calculation"""
+        """Update the bandit with simulation result using enhanced reward calculation with time decay"""
         if result.success:
             main_operator = self.extract_main_operator(result.template)
             if main_operator:
-                # Use enhanced reward calculation
-                reward = calculate_enhanced_reward(result)
+                # Calculate time decay factor
+                time_decay_factor = self.bandit.calculate_time_decay_factor()
+                
+                # Use enhanced reward calculation with time decay
+                reward = calculate_enhanced_reward(result, time_decay_factor)
                 self.bandit.update_arm(main_operator, reward)
                 
                 # Log detailed reward breakdown
@@ -2083,7 +2119,7 @@ Generate {num_templates} templates:"""
                 turnover_bonus = 0.3 if result.turnover <= 30 else (0.1 if result.turnover <= 50 else -0.2)
                 return_drawdown_ratio = result.returns / result.drawdown if result.drawdown > 0 else 0
                 
-                logger.info(f"Updated bandit: {main_operator} -> enhanced_reward={reward:.3f}")
+                logger.info(f"Updated bandit: {main_operator} -> enhanced_reward={reward:.3f} (decay_factor={time_decay_factor:.4f})")
                 logger.info(f"  Breakdown: Sharpe={result.sharpe:.3f}, Margin={margin_bps:.1f}bps, "
                           f"Turnover={result.turnover:.1f}, R/D={return_drawdown_ratio:.2f}")
                 

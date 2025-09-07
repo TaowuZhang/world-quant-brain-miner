@@ -1,17 +1,17 @@
 {
-  "timestamp": 1757202473.5706317,
+  "timestamp": 1757204689.0806348,
   "total_regions": 5,
   "completed_regions": 0,
   "total_templates": 0,
   "completed_templates": 0,
   "total_simulations": 0,
-  "completed_simulations": 15,
-  "successful_simulations": 15,
+  "completed_simulations": 65,
+  "successful_simulations": 65,
   "failed_simulations": 0,
   "current_region": "",
   "current_phase": "",
-  "best_sharpe": 0.75,
-  "best_template": "group_neutralize(quantile(ts_sum(subtract(star_pm_...",
+  "best_sharpe": 1.88,
+  "best_template": "rank(ts_zscore(ts_av_diff(anl94_b_mtl_dlyspe, 20),...",
   "metadata": {
     "generated_at": "2025-09-07 01:30:24",
     "total_operators": 79,
@@ -67,6 +67,31 @@
           "rank"
         ],
         "fields_used": []
+      },
+      {
+        "region": "CHN",
+        "template": "rank(group_neutralize(ts_corr(ts_sum(mdl26_chng_rltv_t_ndstry_bnchmrk_30, 20), ts_mean(anl14_high_cfps_fy1, 20), 60), subindustry))",
+        "operators_used": [
+          "or",
+          "ts_sum",
+          "ts_corr",
+          "ts_mean",
+          "rank",
+          "group_neutralize"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "CHN",
+        "template": "winsorize(ts_av_diff(ts_scale(anl14_high_ebitda_fy2, 60, constant=1), 20), std=4)",
+        "operators_used": [
+          "or",
+          "ts_scale",
+          "ts_av_diff",
+          "scale",
+          "winsorize"
+        ],
+        "fields_used": []
       }
     ],
     "USA": [
@@ -90,6 +115,33 @@
           "ts_std_dev",
           "ts_rank",
           "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "USA",
+        "template": "ts_zscore(signed_power(ts_sum(mdl136_qes_etf_us_flow_in_1m, 60), 0.5), 120)",
+        "operators_used": [
+          "signed_power",
+          "sign",
+          "power",
+          "or",
+          "ts_zscore",
+          "ts_sum",
+          "zscore"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "USA",
+        "template": "hump(winsorize(subtract(ts_quantile(oth432_assets_otlo_predict, 60), ts_quantile(oth432_aacr_trkdpitdeltapredict_funda_predict, 60)), std=4), hump=0.01)",
+        "operators_used": [
+          "subtract",
+          "or",
+          "ts_quantile",
+          "hump",
+          "quantile",
+          "winsorize"
         ],
         "fields_used": []
       }
@@ -132,6 +184,32 @@
           "zscore"
         ],
         "fields_used": []
+      },
+      {
+        "region": "ASI",
+        "template": "rank(ts_zscore(divide(ts_mean(star_rev_smart_estimate_12m, 60), ts_mean(oth432_itli_trkdpitdeltapredict_funda_predict, 60)), 20))",
+        "operators_used": [
+          "divide",
+          "or",
+          "ts_zscore",
+          "ts_mean",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "ASI",
+        "template": "reverse(scale_down(ts_av_diff(rank(ts_mean(mdl25_61v, 20)), 60), constant=0))",
+        "operators_used": [
+          "reverse",
+          "ts_mean",
+          "ts_av_diff",
+          "scale_down",
+          "scale",
+          "rank"
+        ],
+        "fields_used": []
       }
     ],
     "GLB": [
@@ -147,6 +225,48 @@
           "rank"
         ],
         "fields_used": []
+      },
+      {
+        "region": "GLB",
+        "template": "vector_neut(ts_target_tvr_decay(quantile(ts_mean(fnd31_devnorthamericaadditionalfactor4_apg, 20), driver = gaussian, sigma = 1.0), lambda_min = 0, lambda_max = 1, target_tvr = 0.1), ts_decay_linear(mdl26_blndd_grwth_rt_smrtstmt, 60, dense = false))",
+        "operators_used": [
+          "add",
+          "min",
+          "max",
+          "or",
+          "ts_target_tvr_decay",
+          "ts_decay_linear",
+          "ts_mean",
+          "vector_neut",
+          "quantile"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "GLB",
+        "template": "rank(ts_zscore(ts_mean(fnd44_cashflow_accruals, 60), 20))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_mean",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "GLB",
+        "template": "normalize(ts_decay_linear(divide(ts_covariance(mdl26_chng_rltv_t_rssll_2000_30, fnd31_earnshortfall, 60), abs(ts_backfill(oth351_lm_nnc, 20))), 30))",
+        "operators_used": [
+          "abs",
+          "divide",
+          "or",
+          "ts_backfill",
+          "ts_covariance",
+          "ts_decay_linear",
+          "normalize"
+        ],
+        "fields_used": []
       }
     ],
     "EUR": [
@@ -160,6 +280,316 @@
           "or",
           "ts_target_tvr_delta_limit",
           "winsorize",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(anl94_b_mtl_dlyspe, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(assets_curr_oth, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(fnd31_ccacw, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(anl11_3pme, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(anl11_1tic, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(income_tax, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(mdl25_cfsv421_01v, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(depre, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(anl11_cit2reg_industryperc, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(fnd31_chg3yepsast, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(fnd31_actrtn2m, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(fnd31_bmpo, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(mdl26_60dy_srprs_lst_q_rnngs, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(fnd31_ags, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(income_tax_payable, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(mdl26_chng_rltv_t_dj_stxx_600_30, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(fnd31_cashratio, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(mdl25_74v, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(mdl25_41v, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(anl11_creptcesger3pme, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(mdl26_chng_rltv_t_sx_100_30, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(liabilities_oth, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(cashflow_invst, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(anl94_m1m21_ntr, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
+          "rank"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "quantile(ts_corr(anl11_creptcesger1g, ebit, 60), driver = gaussian, sigma = 1)",
+        "operators_used": [
+          "or",
+          "ts_corr",
+          "quantile"
+        ],
+        "fields_used": []
+      },
+      {
+        "region": "EUR",
+        "template": "rank(ts_zscore(ts_av_diff(accounts_payable, 20), 60))",
+        "operators_used": [
+          "or",
+          "ts_zscore",
+          "ts_av_diff",
+          "zscore",
           "rank"
         ],
         "fields_used": []
@@ -212,6 +642,36 @@
         "success": true,
         "error_message": "",
         "timestamp": 1757202192.9924693
+      },
+      {
+        "template": "rank(group_neutralize(ts_corr(ts_sum(mdl26_chng_rltv_t_ndstry_bnchmrk_30, 20), ts_mean(anl14_high_cfps_fy1, 20), 60), subindustry))",
+        "region": "CHN",
+        "sharpe": -1.91,
+        "fitness": -1.96,
+        "turnover": 0.0611,
+        "returns": -0.1314,
+        "drawdown": 1.3696,
+        "margin": -0.004297,
+        "longCount": 465,
+        "shortCount": 432,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757202637.8840587
+      },
+      {
+        "template": "winsorize(ts_av_diff(ts_scale(anl14_high_ebitda_fy2, 60, constant=1), 20), std=4)",
+        "region": "CHN",
+        "sharpe": -0.67,
+        "fitness": -0.37,
+        "turnover": 0.1857,
+        "returns": -0.0569,
+        "drawdown": 0.6466,
+        "margin": -0.000613,
+        "longCount": 180,
+        "shortCount": 172,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757204489.791017
       }
     ],
     "USA": [
@@ -244,6 +704,36 @@
         "success": true,
         "error_message": "",
         "timestamp": 1757202376.4872162
+      },
+      {
+        "template": "ts_zscore(signed_power(ts_sum(mdl136_qes_etf_us_flow_in_1m, 60), 0.5), 120)",
+        "region": "USA",
+        "sharpe": -0.31,
+        "fitness": -0.14,
+        "turnover": 0.0456,
+        "returns": -0.0254,
+        "drawdown": 0.3212,
+        "margin": -0.001113,
+        "longCount": 1294,
+        "shortCount": 1265,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757202554.0797462
+      },
+      {
+        "template": "hump(winsorize(subtract(ts_quantile(oth432_assets_otlo_predict, 60), ts_quantile(oth432_aacr_trkdpitdeltapredict_funda_predict, 60)), std=4), hump=0.01)",
+        "region": "USA",
+        "sharpe": -0.16,
+        "fitness": -0.03,
+        "turnover": 0.0257,
+        "returns": -0.0046,
+        "drawdown": 0.1307,
+        "margin": -0.000354,
+        "longCount": 993,
+        "shortCount": 1031,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203710.1575472
       }
     ],
     "ASI": [
@@ -366,6 +856,81 @@
         "success": true,
         "error_message": "",
         "timestamp": 1757202423.0671077
+      },
+      {
+        "template": "group_neutralize(quantile(ts_sum(subtract(star_pm_region_rank, ts_delay(mdl26_chng_rltv_t_cntry_bnchmrk_30, 20), filter=true), 60), driver=uniform), country)",
+        "region": "ASI",
+        "sharpe": 0.75,
+        "fitness": 0.49,
+        "turnover": 0.019,
+        "returns": 0.0524,
+        "drawdown": 0.186,
+        "margin": 0.005522,
+        "longCount": 1640,
+        "shortCount": 1638,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757202477.3607588
+      },
+      {
+        "template": "group_neutralize(quantile(ts_sum(subtract(star_pm_region_rank, ts_delay(mdl26_chng_rltv_t_cntry_bnchmrk_30, 20), filter=true), 60), driver=uniform), country)",
+        "region": "ASI",
+        "sharpe": 0.75,
+        "fitness": 0.49,
+        "turnover": 0.019,
+        "returns": 0.0524,
+        "drawdown": 0.186,
+        "margin": 0.005522,
+        "longCount": 1640,
+        "shortCount": 1638,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757202555.0920627
+      },
+      {
+        "template": "rank(ts_zscore(divide(ts_mean(star_rev_smart_estimate_12m, 60), ts_mean(oth432_itli_trkdpitdeltapredict_funda_predict, 60)), 20))",
+        "region": "ASI",
+        "sharpe": 0.11,
+        "fitness": 0.02,
+        "turnover": 0.0737,
+        "returns": 0.0054,
+        "drawdown": 0.1176,
+        "margin": 0.000146,
+        "longCount": 1284,
+        "shortCount": 1241,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757202601.8741214
+      },
+      {
+        "template": "group_neutralize(quantile(ts_sum(subtract(star_pm_region_rank, ts_delay(mdl26_chng_rltv_t_cntry_bnchmrk_30, 20), filter=true), 60), driver=uniform), country)",
+        "region": "ASI",
+        "sharpe": 0.75,
+        "fitness": 0.49,
+        "turnover": 0.019,
+        "returns": 0.0524,
+        "drawdown": 0.186,
+        "margin": 0.005522,
+        "longCount": 1640,
+        "shortCount": 1638,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757202765.832747
+      },
+      {
+        "template": "reverse(scale_down(ts_av_diff(rank(ts_mean(mdl25_61v, 20)), 60), constant=0))",
+        "region": "ASI",
+        "sharpe": -0.54,
+        "fitness": -0.21,
+        "turnover": 0.0562,
+        "returns": -0.0183,
+        "drawdown": 0.2286,
+        "margin": -0.000652,
+        "longCount": 1605,
+        "shortCount": 1681,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203962.7067297
       }
     ],
     "GLB": [
@@ -383,6 +948,51 @@
         "success": true,
         "error_message": "",
         "timestamp": 1757201820.1129034
+      },
+      {
+        "template": "vector_neut(ts_target_tvr_decay(quantile(ts_mean(fnd31_devnorthamericaadditionalfactor4_apg, 20), driver = gaussian, sigma = 1.0), lambda_min = 0, lambda_max = 1, target_tvr = 0.1), ts_decay_linear(mdl26_blndd_grwth_rt_smrtstmt, 60, dense = false))",
+        "region": "GLB",
+        "sharpe": -0.28,
+        "fitness": -0.1,
+        "turnover": 0.0211,
+        "returns": -0.0152,
+        "drawdown": 0.2358,
+        "margin": -0.001442,
+        "longCount": 370,
+        "shortCount": 448,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203051.429648
+      },
+      {
+        "template": "rank(ts_zscore(ts_mean(fnd44_cashflow_accruals, 60), 20))",
+        "region": "GLB",
+        "sharpe": 0.28,
+        "fitness": 0.07,
+        "turnover": 0.1308,
+        "returns": 0.0092,
+        "drawdown": 0.0477,
+        "margin": 0.000141,
+        "longCount": 1158,
+        "shortCount": 1161,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203134.492946
+      },
+      {
+        "template": "normalize(ts_decay_linear(divide(ts_covariance(mdl26_chng_rltv_t_rssll_2000_30, fnd31_earnshortfall, 60), abs(ts_backfill(oth351_lm_nnc, 20))), 30))",
+        "region": "GLB",
+        "sharpe": -0.11,
+        "fitness": -0.05,
+        "turnover": 0.109,
+        "returns": -0.026,
+        "drawdown": 0.5896,
+        "margin": -0.000478,
+        "longCount": 166,
+        "shortCount": 151,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203402.6879451
       }
     ],
     "EUR": [
@@ -400,6 +1010,576 @@
         "success": true,
         "error_message": "",
         "timestamp": 1757202381.4855433
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(anl94_b_mtl_dlyspe, 20), 60))",
+        "region": "EUR",
+        "sharpe": 1.88,
+        "fitness": 0.63,
+        "turnover": 0.5538,
+        "returns": 0.063,
+        "drawdown": 0.0429,
+        "margin": 0.000228,
+        "longCount": 322,
+        "shortCount": 323,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757202723.099617
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(assets_curr_oth, 20), 60))",
+        "region": "EUR",
+        "sharpe": 0.38,
+        "fitness": 0.1,
+        "turnover": 0.113,
+        "returns": 0.0087,
+        "drawdown": 0.039,
+        "margin": 0.000153,
+        "longCount": 562,
+        "shortCount": 557,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757202884.4327538
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(fnd31_ccacw, 20), 60))",
+        "region": "EUR",
+        "sharpe": 0.18,
+        "fitness": 0.03,
+        "turnover": 0.238,
+        "returns": 0.0047,
+        "drawdown": 0.0766,
+        "margin": 3.9e-05,
+        "longCount": 495,
+        "shortCount": 493,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757202896.736646
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(anl94_b_mtl_dlyspe, 20), 60))",
+        "region": "EUR",
+        "sharpe": 1.06,
+        "fitness": 1.05,
+        "turnover": 0.2912,
+        "returns": 0.2877,
+        "drawdown": 0.4593,
+        "margin": 0.001976,
+        "longCount": 649,
+        "shortCount": 0,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757202933.8234005
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(anl11_3pme, 20), 60))",
+        "region": "EUR",
+        "sharpe": 0.02,
+        "fitness": 0.0,
+        "turnover": 0.07,
+        "returns": 0.0001,
+        "drawdown": 0.0093,
+        "margin": 3e-06,
+        "longCount": 31,
+        "shortCount": 33,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203048.6231325
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(anl94_b_mtl_dlyspe, 20), 60))",
+        "region": "EUR",
+        "sharpe": 1.06,
+        "fitness": 1.05,
+        "turnover": 0.2912,
+        "returns": 0.2877,
+        "drawdown": 0.4593,
+        "margin": 0.001976,
+        "longCount": 649,
+        "shortCount": 0,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203101.2790203
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(anl11_1tic, 20), 60))",
+        "region": "EUR",
+        "sharpe": 0.07,
+        "fitness": 0.0,
+        "turnover": 0.07,
+        "returns": 0.0004,
+        "drawdown": 0.0086,
+        "margin": 1.1e-05,
+        "longCount": 30,
+        "shortCount": 32,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203102.1780972
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(income_tax, 20), 60))",
+        "region": "EUR",
+        "sharpe": 0.33,
+        "fitness": 0.08,
+        "turnover": 0.1154,
+        "returns": 0.0065,
+        "drawdown": 0.0476,
+        "margin": 0.000113,
+        "longCount": 839,
+        "shortCount": 841,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203244.7434394
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(anl94_b_mtl_dlyspe, 20), 60))",
+        "region": "EUR",
+        "sharpe": 1.75,
+        "fitness": 0.62,
+        "turnover": 0.5249,
+        "returns": 0.0652,
+        "drawdown": 0.0701,
+        "margin": 0.000249,
+        "longCount": 326,
+        "shortCount": 327,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203255.664636
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(anl94_b_mtl_dlyspe, 20), 60))",
+        "region": "EUR",
+        "sharpe": 1.81,
+        "fitness": 0.56,
+        "turnover": 0.5925,
+        "returns": 0.0576,
+        "drawdown": 0.0453,
+        "margin": 0.000195,
+        "longCount": 284,
+        "shortCount": 284,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203300.4347906
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(mdl25_cfsv421_01v, 20), 60))",
+        "region": "EUR",
+        "sharpe": -0.15,
+        "fitness": -0.03,
+        "turnover": 0.132,
+        "returns": -0.0041,
+        "drawdown": 0.1041,
+        "margin": -6.2e-05,
+        "longCount": 352,
+        "shortCount": 351,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203318.2576406
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(anl94_b_mtl_dlyspe, 20), 60))",
+        "region": "EUR",
+        "sharpe": 1.81,
+        "fitness": 0.56,
+        "turnover": 0.5925,
+        "returns": 0.0576,
+        "drawdown": 0.0453,
+        "margin": 0.000195,
+        "longCount": 284,
+        "shortCount": 284,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203395.3413184
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(depre, 20), 60))",
+        "region": "EUR",
+        "sharpe": 0.37,
+        "fitness": 0.11,
+        "turnover": 0.1299,
+        "returns": 0.0106,
+        "drawdown": 0.0823,
+        "margin": 0.000163,
+        "longCount": 398,
+        "shortCount": 398,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203411.1473558
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(anl11_cit2reg_industryperc, 20), 60))",
+        "region": "EUR",
+        "sharpe": -0.17,
+        "fitness": -0.03,
+        "turnover": 0.0882,
+        "returns": -0.0047,
+        "drawdown": 0.0605,
+        "margin": -0.000107,
+        "longCount": 18,
+        "shortCount": 18,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203482.1120913
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(fnd31_chg3yepsast, 20), 60))",
+        "region": "EUR",
+        "sharpe": -0.4,
+        "fitness": -0.08,
+        "turnover": 0.1838,
+        "returns": -0.0075,
+        "drawdown": 0.1156,
+        "margin": -8.2e-05,
+        "longCount": 879,
+        "shortCount": 878,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203495.6753776
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(fnd31_actrtn2m, 20), 60))",
+        "region": "EUR",
+        "sharpe": -0.82,
+        "fitness": -0.27,
+        "turnover": 0.3456,
+        "returns": -0.0373,
+        "drawdown": 0.4186,
+        "margin": -0.000216,
+        "longCount": 1015,
+        "shortCount": 1015,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203517.1905782
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(fnd31_bmpo, 20), 60))",
+        "region": "EUR",
+        "sharpe": -0.12,
+        "fitness": -0.01,
+        "turnover": 0.178,
+        "returns": -0.0023,
+        "drawdown": 0.0669,
+        "margin": -2.6e-05,
+        "longCount": 884,
+        "shortCount": 882,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203587.543558
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(mdl26_60dy_srprs_lst_q_rnngs, 20), 60))",
+        "region": "EUR",
+        "sharpe": 0.76,
+        "fitness": 0.32,
+        "turnover": 0.1296,
+        "returns": 0.0227,
+        "drawdown": 0.0397,
+        "margin": 0.00035,
+        "longCount": 279,
+        "shortCount": 279,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203599.4258468
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(anl94_b_mtl_dlyspe, 20), 60))",
+        "region": "EUR",
+        "sharpe": 1.73,
+        "fitness": 0.6,
+        "turnover": 0.5378,
+        "returns": 0.0642,
+        "drawdown": 0.0708,
+        "margin": 0.000239,
+        "longCount": 324,
+        "shortCount": 325,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203683.7405922
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(fnd31_ags, 20), 60))",
+        "region": "EUR",
+        "sharpe": 0.61,
+        "fitness": 0.17,
+        "turnover": 0.1933,
+        "returns": 0.0144,
+        "drawdown": 0.0354,
+        "margin": 0.000149,
+        "longCount": 581,
+        "shortCount": 580,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203726.874743
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(income_tax_payable, 20), 60))",
+        "region": "EUR",
+        "sharpe": -0.32,
+        "fitness": -0.08,
+        "turnover": 0.1163,
+        "returns": -0.007,
+        "drawdown": 0.1219,
+        "margin": -0.00012,
+        "longCount": 615,
+        "shortCount": 612,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203772.621063
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(mdl26_chng_rltv_t_dj_stxx_600_30, 20), 60))",
+        "region": "EUR",
+        "sharpe": -0.81,
+        "fitness": -0.26,
+        "turnover": 0.3765,
+        "returns": -0.04,
+        "drawdown": 0.4609,
+        "margin": -0.000212,
+        "longCount": 1025,
+        "shortCount": 1026,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203877.350923
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(fnd31_cashratio, 20), 60))",
+        "region": "EUR",
+        "sharpe": 0.11,
+        "fitness": 0.01,
+        "turnover": 0.1712,
+        "returns": 0.0023,
+        "drawdown": 0.0529,
+        "margin": 2.7e-05,
+        "longCount": 725,
+        "shortCount": 726,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203902.0571747
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(anl94_b_mtl_dlyspe, 20), 60))",
+        "region": "EUR",
+        "sharpe": 1.82,
+        "fitness": 0.63,
+        "turnover": 0.5399,
+        "returns": 0.0653,
+        "drawdown": 0.0856,
+        "margin": 0.000242,
+        "longCount": 324,
+        "shortCount": 325,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757203918.0379293
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(income_tax, 20), 60))",
+        "region": "EUR",
+        "sharpe": 0.33,
+        "fitness": 0.08,
+        "turnover": 0.1154,
+        "returns": 0.0065,
+        "drawdown": 0.0476,
+        "margin": 0.000113,
+        "longCount": 839,
+        "shortCount": 841,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757204025.4765387
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(anl94_b_mtl_dlyspe, 20), 60))",
+        "region": "EUR",
+        "sharpe": 1.85,
+        "fitness": 0.59,
+        "turnover": 0.5779,
+        "returns": 0.0591,
+        "drawdown": 0.043,
+        "margin": 0.000205,
+        "longCount": 286,
+        "shortCount": 286,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757204062.9648812
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(mdl25_74v, 20), 60))",
+        "region": "EUR",
+        "sharpe": -0.64,
+        "fitness": -0.36,
+        "turnover": 0.1358,
+        "returns": -0.0423,
+        "drawdown": 0.4534,
+        "margin": -0.000623,
+        "longCount": 56,
+        "shortCount": 55,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757204105.6128993
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(mdl25_41v, 20), 60))",
+        "region": "EUR",
+        "sharpe": 0.1,
+        "fitness": 0.01,
+        "turnover": 0.1512,
+        "returns": 0.0031,
+        "drawdown": 0.1026,
+        "margin": 4.1e-05,
+        "longCount": 662,
+        "shortCount": 666,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757204139.3326259
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(anl11_3pme, 20), 60))",
+        "region": "EUR",
+        "sharpe": 0.02,
+        "fitness": 0.0,
+        "turnover": 0.07,
+        "returns": 0.0001,
+        "drawdown": 0.0093,
+        "margin": 3e-06,
+        "longCount": 31,
+        "shortCount": 33,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757204161.908229
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(anl11_creptcesger3pme, 20), 60))",
+        "region": "EUR",
+        "sharpe": -0.08,
+        "fitness": -0.01,
+        "turnover": 0.0859,
+        "returns": -0.0029,
+        "drawdown": 0.0921,
+        "margin": -6.7e-05,
+        "longCount": 18,
+        "shortCount": 18,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757204280.835169
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(mdl26_chng_rltv_t_sx_100_30, 20), 60))",
+        "region": "EUR",
+        "sharpe": -0.82,
+        "fitness": -0.26,
+        "turnover": 0.3824,
+        "returns": -0.0396,
+        "drawdown": 0.4595,
+        "margin": -0.000207,
+        "longCount": 1025,
+        "shortCount": 1026,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757204341.7706954
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(liabilities_oth, 20), 60))",
+        "region": "EUR",
+        "sharpe": -0.3,
+        "fitness": -0.07,
+        "turnover": 0.12,
+        "returns": -0.0059,
+        "drawdown": 0.1264,
+        "margin": -9.8e-05,
+        "longCount": 788,
+        "shortCount": 788,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757204404.4544954
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(cashflow_invst, 20), 60))",
+        "region": "EUR",
+        "sharpe": 0.38,
+        "fitness": 0.11,
+        "turnover": 0.1192,
+        "returns": 0.01,
+        "drawdown": 0.0567,
+        "margin": 0.000167,
+        "longCount": 830,
+        "shortCount": 834,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757204408.5951984
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(anl94_b_mtl_dlyspe, 20), 60))",
+        "region": "EUR",
+        "sharpe": 1.82,
+        "fitness": 0.64,
+        "turnover": 0.5278,
+        "returns": 0.0656,
+        "drawdown": 0.0849,
+        "margin": 0.000249,
+        "longCount": 326,
+        "shortCount": 327,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757204515.0367045
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(anl94_m1m21_ntr, 20), 60))",
+        "region": "EUR",
+        "sharpe": -0.36,
+        "fitness": -0.05,
+        "turnover": 0.5353,
+        "returns": -0.0117,
+        "drawdown": 0.2444,
+        "margin": -4.4e-05,
+        "longCount": 324,
+        "shortCount": 323,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757204523.5340476
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(anl94_b_mtl_dlyspe, 20), 60))",
+        "region": "EUR",
+        "sharpe": 1.82,
+        "fitness": 0.64,
+        "turnover": 0.5278,
+        "returns": 0.0656,
+        "drawdown": 0.0849,
+        "margin": 0.000249,
+        "longCount": 326,
+        "shortCount": 327,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757204527.6655
+      },
+      {
+        "template": "quantile(ts_corr(anl11_creptcesger1g, ebit, 60), driver = gaussian, sigma = 1)",
+        "region": "EUR",
+        "sharpe": 0.64,
+        "fitness": 0.31,
+        "turnover": 0.1083,
+        "returns": 0.0291,
+        "drawdown": 0.0791,
+        "margin": 0.000537,
+        "longCount": 309,
+        "shortCount": 264,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757204580.8554034
+      },
+      {
+        "template": "rank(ts_zscore(ts_av_diff(accounts_payable, 20), 60))",
+        "region": "EUR",
+        "sharpe": -0.18,
+        "fitness": -0.03,
+        "turnover": 0.1173,
+        "returns": -0.0038,
+        "drawdown": 0.088,
+        "margin": -6.5e-05,
+        "longCount": 654,
+        "shortCount": 651,
+        "success": true,
+        "error_message": "",
+        "timestamp": 1757204610.3985577
       }
     ]
   }
