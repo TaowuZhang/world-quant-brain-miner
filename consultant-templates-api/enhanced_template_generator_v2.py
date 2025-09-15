@@ -267,7 +267,7 @@ def calculate_enhanced_reward(result: TemplateResult, time_decay_factor: float =
     elif margin_bps >= 5:
         margin_bonus = 0.2  # Good margin
     elif margin_bps > 0:
-        margin_bonus = 0.1  # Some margin
+        margin_bonus = -3  # Some margin
     
     # Turnover penalty/bonus
     turnover_bonus = 0.0
@@ -1068,9 +1068,12 @@ Generate {num_templates} templates:"""
     
     def select_region_by_pyramid(self):
         """Select region based on pyramid multipliers"""
+        # Use active_regions if available (filtered regions), otherwise use all regions
+        available_regions = getattr(self, 'active_regions', self.regions)
+        
         # Calculate weights based on pyramid multipliers
         region_weights = {}
-        for region in self.regions:
+        for region in available_regions:
             delay = self.select_optimal_delay(region)
             multiplier = self.pyramid_multipliers.get(region, {}).get(delay, 1.0)
             region_weights[region] = multiplier
@@ -1078,7 +1081,7 @@ Generate {num_templates} templates:"""
         # Weighted random selection
         total_weight = sum(region_weights.values())
         if total_weight == 0:
-            return random.choice(self.regions)
+            return random.choice(available_regions)
         
         rand = random.random() * total_weight
         cumulative = 0
@@ -1087,7 +1090,7 @@ Generate {num_templates} templates:"""
             if rand <= cumulative:
                 return region
         
-        return random.choice(self.regions)
+        return random.choice(available_regions)
     
     def extract_operators_from_template(self, template: str) -> List[str]:
         """Extract operator names from a template"""
@@ -1443,6 +1446,9 @@ Generate {num_templates} templates:"""
         """Generate templates and test them with TRUE CONCURRENT subprocess execution"""
         if regions is None:
             regions = list(self.region_configs.keys())
+        
+        # Store the filtered regions for use in region selection
+        self.active_regions = regions
         
         # Initialize progress tracker
         self.progress_tracker.total_regions = len(regions)

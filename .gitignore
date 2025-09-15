@@ -24,3 +24,5 @@ credential.txt
 
 data_fields_cache_*.json
 *v2.json
+
+**/venv
