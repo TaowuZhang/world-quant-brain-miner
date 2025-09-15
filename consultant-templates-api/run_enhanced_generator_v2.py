@@ -8,6 +8,7 @@ Enhanced runner script v2 for template generation with multi-simulation testing
 
 import os
 import sys
+import argparse
 from enhanced_template_generator_v2 import EnhancedTemplateGeneratorV2
 import json
 import time
@@ -18,9 +19,47 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(
+        description='Enhanced Template Generator v2 with Multi-Arm Bandit',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python run_enhanced_generator_v2.py                    # Run all regions
+  python run_enhanced_generator_v2.py --region USA       # Run only USA region
+  python run_enhanced_generator_v2.py --region EUR       # Run only EUR region
+  python run_enhanced_generator_v2.py --region GLB --templates 10  # Run GLB with 10 templates
+        """
+    )
+    
+    parser.add_argument(
+        '--region', '-r',
+        type=str,
+        choices=['USA', 'GLB', 'EUR', 'ASI', 'CHN'],
+        help='Single region to test (if not specified, all regions will be tested)'
+    )
+    
+    parser.add_argument(
+        '--templates', '-t',
+        type=int,
+        default=8,
+        help='Number of templates per region (default: 8)'
+    )
+    
+    parser.add_argument(
+        '--resume',
+        action='store_true',
+        help='Automatically resume from previous progress without prompting'
+    )
+    
+    return parser.parse_args()
+
 def main():
-    # C
-    # eck if credentials file exists
+    # Parse command line arguments
+    args = parse_arguments()
+    
+    # Check if credentials file exists
     if not os.path.exists('credential.txt'):
         print("Error: credential.txt file not found!")
         print("Please create a credential.txt file with your WorldQuant Brain credentials in JSON format:")
@@ -44,9 +83,9 @@ def main():
         # Check for existing progress
         progress_file = "template_progress_v2.json"
         results_file = "enhanced_results_v2.json"
-        resume = False
+        resume = args.resume
         
-        if os.path.exists(progress_file):
+        if os.path.exists(progress_file) and not args.resume:
             print(f"📁 Found existing progress file: {progress_file}")
             response = input("Do you want to resume from previous progress? (y/n): ").lower().strip()
             if response in ['y', 'yes']:
@@ -54,6 +93,8 @@ def main():
                 print("✅ Will resume from previous progress")
             else:
                 print("🔄 Starting fresh")
+        elif args.resume:
+            print("✅ Resume mode enabled via command line")
         
         # Initialize generator
         generator = EnhancedTemplateGeneratorV2(
@@ -65,8 +106,17 @@ def main():
         )
         
         # Configuration
-        regions = ['USA', 'GLB', 'EUR', 'ASI', 'CHN']  # All regions
-        templates_per_region = 8  # Increased for better results
+        all_regions = ['USA', 'GLB', 'EUR', 'ASI', 'CHN']
+        
+        # Determine regions to test
+        if args.region:
+            regions = [args.region]
+            print(f"🎯 Single region mode: Testing only {args.region}")
+        else:
+            regions = all_regions
+            print(f"🌍 Multi-region mode: Testing all regions")
+        
+        templates_per_region = args.templates
         
         print(f"📊 Configuration:")
         print(f"   Regions: {', '.join(regions)}")
@@ -176,13 +226,18 @@ def main():
         print("   - Review the generated templates in the JSON file")
         print("   - Use the best performing templates as starting points")
         print("   - Run example_usage.py to explore the results")
-        print("   - Use --resume flag to continue from where you left off")
+        print("\n🔧 Command line options:")
+        print("   - Use --region <REGION> to test a single region (USA, GLB, EUR, ASI, CHN)")
+        print("   - Use --templates <N> to specify number of templates per region")
+        print("   - Use --resume to automatically resume from previous progress")
+        print("   - Use --help to see all available options")
         
         return 0
         
     except KeyboardInterrupt:
         print(f"\n\n⚠️  Process interrupted by user")
         print("💾 Progress has been saved. You can resume later with --resume flag")
+        print("💡 Use --region <REGION> to test a specific region next time")
         return 1
         
     except Exception as e:
