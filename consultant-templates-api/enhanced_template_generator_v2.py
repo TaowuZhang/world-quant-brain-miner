@@ -411,7 +411,7 @@ class EnhancedTemplateGeneratorV2:
         # Pyramid theme multipliers (delay=0, delay=1) for each region
         self.pyramid_multipliers = {
             "USA": {"0": 1.8, "1": 1.2},  # delay=0 has higher multiplier
-            "GLB": {"0": 1.0, "1": 1.5},  # delay=1 has higher multiplier
+            "GLB": {"0": 1.0, "1": 1.5},  # delay=1 has higher multiplier (delay=0 not available)
             "EUR": {"0": 1.7, "1": 1.4},  # delay=0 has higher multiplier
             "ASI": {"0": 1.0, "1": 1.5},  # delay=1 has higher multiplier (delay=0 not available)
             "CHN": {"0": 1.0, "1": 1.8}   # delay=1 has higher multiplier (delay=0 not available)
@@ -446,6 +446,19 @@ class EnhancedTemplateGeneratorV2:
         self.template_quality_tracker = {}  # {template_hash: {'zero_pnl_count': int, 'total_attempts': int}}
         self.max_zero_pnl_attempts = 3  # Delete template after 3 zero PnL occurrences
         
+        # PnL checking statistics
+        self.pnl_check_stats = {
+            'total_checks': 0,
+            'mandatory_checks': 0,
+            'probability_checks': 0,
+            'skipped_checks': 0,
+            'flatlined_detected': 0,
+            'suspicion_scores': []
+        }
+        
+        # Load existing blacklist for persistence
+        self.load_blacklist_from_file()
+        
         # Load previous progress if it exists (for exploit data)
         self.load_progress()
     
@@ -453,8 +466,8 @@ class EnhancedTemplateGeneratorV2:
         """Select delay based on pyramid multipliers and region constraints"""
         multipliers = self.pyramid_multipliers.get(region, {"0": 1.0, "1": 1.0})
         
-        # For ASI and CHN, only delay=1 is available
-        if region in ["ASI", "CHN"]:
+        # For ASI, CHN, and GLB, only delay=1 is available
+        if region in ["ASI", "CHN", "GLB"]:
             return 1
         
         # For other regions, use weighted selection based on multipliers
@@ -759,7 +772,10 @@ LEARN FROM THESE MISTAKES:
                 return False, "Missing comma between parameters"
             
             # Basic syntax check - ensure it looks like a function call
-            if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*\(', template):
+            # Allow for negation patterns like subtract(0, ...) or multiply(-1, ...)
+            if not (re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*\(', template) or 
+                    re.match(r'^subtract\(0,\s*', template) or 
+                    re.match(r'^multiply\(-1,\s*', template)):
                 return False, "Invalid function call syntax"
             
             # Check for obvious field name issues - only check for very obvious problems
@@ -1360,7 +1376,7 @@ Generate {num_templates} templates:"""
                             # Check PnL data quality for successful simulations
                             pnl_quality_ok = True
                             if has_meaningful_metrics:
-                                pnl_quality_ok = self.track_template_quality(template_data['template'], alpha_id)
+                                pnl_quality_ok = self.track_template_quality(template_data['template'], alpha_id, sharpe, fitness, margin)
                             
                             # Only consider truly successful if both metrics and PnL quality are good
                             is_truly_successful = has_meaningful_metrics and pnl_quality_ok
@@ -1668,34 +1684,41 @@ Generate {num_templates} templates:"""
         base_code = base_template['template']
         variations = []
         
-        # Check if the template is already negated (starts with minus)
-        if base_code.strip().startswith('-'):
+        # Check if the template is already negated (starts with minus or uses subtract)
+        if (base_code.strip().startswith('-') or 
+            'subtract(0,' in base_code or 
+            'multiply(-1,' in base_code):
             logger.info(f"Template already negated, skipping negation variation: {base_code[:50]}...")
             return []
         
-        # Create negated version by adding minus sign
-        negated_template = f"-({base_code})"
+        # Try different negation approaches that are valid WorldQuant Brain syntax
+        negation_approaches = [
+            f"subtract(0, {base_code})",  # subtract(0, expression) = -expression
+            f"multiply(-1, {base_code})",  # multiply(-1, expression) = -expression
+        ]
         
         # Get valid fields for validation
         data_fields = self.get_data_fields_for_region(region, delay)
         valid_fields = [field['id'] for field in data_fields] if data_fields else []
         
-        # Validate the negated template syntax
-        is_valid, error_msg = self.validate_template_syntax(negated_template, valid_fields)
-        if is_valid:
-            variation = {
-                'template': negated_template,
-                'region': region,
-                'operators_used': base_template.get('operators_used', []),
-                'fields_used': base_template.get('fields_used', []),
-                'neutralization': base_template.get('neutralization', 'INDUSTRY'),
-                'variation_type': 'negation',
-                'original_template': base_code
-            }
-            variations.append(variation)
-            logger.info(f"Generated negation variation: {negated_template[:50]}...")
-        else:
-            logger.warning(f"Negated template failed syntax validation: {negated_template[:50]}... - {error_msg}")
+        for negated_template in negation_approaches:
+            # Validate the negated template syntax
+            is_valid, error_msg = self.validate_template_syntax(negated_template, valid_fields)
+            if is_valid:
+                variation = {
+                    'template': negated_template,
+                    'region': region,
+                    'operators_used': base_template.get('operators_used', []),
+                    'fields_used': base_template.get('fields_used', []),
+                    'neutralization': base_template.get('neutralization', 'INDUSTRY'),
+                    'variation_type': 'negation',
+                    'original_template': base_code
+                }
+                variations.append(variation)
+                logger.info(f"Generated negation variation: {negated_template[:50]}...")
+                break  # Use the first valid negation approach
+            else:
+                logger.warning(f"Negated template failed syntax validation: {negated_template[:50]}... - {error_msg}")
         
         return variations
     
@@ -1733,12 +1756,24 @@ Generate {num_templates} templates:"""
         
         return False
     
-    def check_pnl_data_quality(self, alpha_id: str) -> Tuple[bool, str]:
+    def check_pnl_data_quality(self, alpha_id: str, sharpe: float = 0, fitness: float = 0, margin: float = 0) -> Tuple[bool, str]:
         """
-        Check PnL data quality for an alpha
+        Check PnL data quality for an alpha, including detection of 'too good to be true' alphas
         Returns: (is_good_quality, reason)
         """
         try:
+            # Determine if we should check PnL based on suspicion score
+            should_check, check_reason = self._should_check_pnl(sharpe, fitness, margin)
+            
+            if not should_check:
+                # Skip PnL check for low suspicion alphas
+                self.pnl_check_stats['skipped_checks'] += 1
+                return True, f"Skipped PnL check - {check_reason}"
+            
+            # Track that we're doing a PnL check
+            self.pnl_check_stats['total_checks'] += 1
+            logger.info(f"🔍 Checking PnL for alpha {alpha_id}: {check_reason}")
+            
             # Fetch PnL data from WorldQuant API
             pnl_url = f'https://api.worldquantbrain.com/alphas/{alpha_id}/recordsets/pnl'
             response = self.sess.get(pnl_url)
@@ -1757,10 +1792,12 @@ Generate {num_templates} templates:"""
             zero_pnl_count = 0
             non_zero_pnl_count = 0
             total_pnl_sum = 0.0
+            pnl_values = []
             
             for record in records:
                 if len(record) >= 2:  # Ensure we have at least date and pnl
                     pnl_value = record[1]  # PnL is the second element
+                    pnl_values.append(pnl_value)
                     if pnl_value == 0.0:
                         zero_pnl_count += 1
                     else:
@@ -1770,6 +1807,12 @@ Generate {num_templates} templates:"""
             # Calculate quality metrics
             zero_pnl_ratio = zero_pnl_count / total_records if total_records > 0 else 1.0
             avg_non_zero_pnl = total_pnl_sum / non_zero_pnl_count if non_zero_pnl_count > 0 else 0.0
+            
+            # Check for flatlined PnL curve (constant values over time)
+            is_flatlined = self._detect_flatlined_pnl(pnl_values)
+            if is_flatlined:
+                self.pnl_check_stats['flatlined_detected'] += 1
+                return False, f"FLATLINED PnL curve detected - constant values over time (too good to be true alpha)"
             
             # Quality criteria
             if zero_pnl_ratio > 0.8:  # More than 80% zeros
@@ -1787,7 +1830,182 @@ Generate {num_templates} templates:"""
         except Exception as e:
             return False, f"Error checking PnL quality: {str(e)}"
     
-    def track_template_quality(self, template: str, alpha_id: str) -> bool:
+    def _detect_flatlined_pnl(self, pnl_values: List[float]) -> bool:
+        """
+        Detect if PnL curve has ANY flatlining (constant values over time)
+        This indicates a 'too good to be true' alpha that doesn't actually generate real PnL
+        STRICT: Any flatlining, even 5% or 10%, is unacceptable for a real alpha
+        """
+        if len(pnl_values) < 10:  # Need at least 10 data points
+            return False
+        
+        # Check if all values are the same (including zero)
+        unique_values = set(pnl_values)
+        if len(unique_values) == 1:
+            return True
+        
+        # Check if values are very close to each other (within a small threshold)
+        # This catches cases where PnL is constant but not exactly zero
+        if len(unique_values) <= 3:  # Only 1-3 unique values in the entire series
+            return True
+        
+        # Check for very low variance (standard deviation close to zero)
+        import statistics
+        try:
+            std_dev = statistics.stdev(pnl_values)
+            mean_abs = statistics.mean([abs(x) for x in pnl_values])
+            
+            # If standard deviation is very small relative to mean absolute value
+            if mean_abs > 0 and std_dev / mean_abs < 0.01:  # Less than 1% variation
+                return True
+            
+            # If standard deviation is extremely small in absolute terms
+            if std_dev < 1e-6:  # Less than 0.000001
+                return True
+                
+        except statistics.StatisticsError:
+            # If we can't calculate statistics, assume it's flatlined
+            return True
+        
+        # STRICT CHECK: Any single value representing more than 5% of the data is suspicious
+        # Real alphas should have varied PnL throughout the entire time series
+        value_counts = {}
+        for value in pnl_values:
+            value_counts[value] = value_counts.get(value, 0) + 1
+        
+        # Check for any dominant value (even 5% is too much for a real alpha)
+        max_count = max(value_counts.values())
+        max_ratio = max_count / len(pnl_values)
+        
+        # If any single value represents more than 5% of the data, it's flatlined
+        if max_ratio > 0.05:  # Changed from 0.9 to 0.05 (5%)
+            logger.warning(f"🚨 FLATLINED PnL detected: {max_ratio*100:.1f}% of values are identical ({max_count}/{len(pnl_values)})")
+            return True
+        
+        # Additional check: Look for consecutive identical values (streaks)
+        # Real alphas shouldn't have long streaks of identical PnL
+        max_streak = 1
+        current_streak = 1
+        for i in range(1, len(pnl_values)):
+            if pnl_values[i] == pnl_values[i-1]:
+                current_streak += 1
+                max_streak = max(max_streak, current_streak)
+            else:
+                current_streak = 1
+        
+        # If there's a streak of more than 5% of the data, it's suspicious
+        if max_streak > len(pnl_values) * 0.05:  # More than 5% consecutive identical values
+            logger.warning(f"🚨 FLATLINED PnL detected: {max_streak} consecutive identical values ({max_streak/len(pnl_values)*100:.1f}% of data)")
+            return True
+        
+        # Additional strict check: Look for very small variations that might indicate flatlining
+        # Real alphas should have meaningful PnL variations, not just tiny fluctuations
+        try:
+            # Calculate the range of PnL values
+            pnl_range = max(pnl_values) - min(pnl_values)
+            mean_abs_pnl = statistics.mean([abs(x) for x in pnl_values])
+            
+            # If the range is very small relative to the mean absolute value, it's suspicious
+            if mean_abs_pnl > 0 and pnl_range / mean_abs_pnl < 0.1:  # Less than 10% range
+                logger.warning(f"🚨 FLATLINED PnL detected: Very small range {pnl_range:.6f} relative to mean {mean_abs_pnl:.6f}")
+                return True
+            
+            # If the range is extremely small in absolute terms
+            if pnl_range < 1e-5:  # Less than 0.00001
+                logger.warning(f"🚨 FLATLINED PnL detected: Extremely small range {pnl_range:.8f}")
+                return True
+                
+        except statistics.StatisticsError:
+            # If we can't calculate statistics, assume it's flatlined
+            return True
+        
+        return False
+    
+    def _calculate_suspicion_score(self, sharpe: float, fitness: float, margin: float) -> float:
+        """
+        Calculate a suspicion score (0.0 to 1.0) based on how 'too good to be true' the metrics are
+        Higher scores indicate higher probability of flatlined PnL
+        """
+        suspicion_score = 0.0
+        suspicious_factors = []
+        
+        # Fitness suspicion (0.0 to 0.4)
+        if fitness > 0.5:  # Start getting suspicious at 0.5
+            fitness_suspicion = min(0.4, (fitness - 0.5) / 2.0)  # Max 0.4 at fitness 1.3+
+            suspicion_score += fitness_suspicion
+            if fitness > 1.0:
+                suspicious_factors.append(f"Fitness={fitness:.3f}")
+        
+        # Sharpe suspicion (0.0 to 0.4)
+        if sharpe > 1.0:  # Start getting suspicious at 1.0
+            sharpe_suspicion = min(0.4, (sharpe - 1.0) / 3.0)  # Max 0.4 at sharpe 2.2+
+            suspicion_score += sharpe_suspicion
+            if sharpe > 1.5:
+                suspicious_factors.append(f"Sharpe={sharpe:.3f}")
+        
+        # Margin suspicion (0.0 to 0.2)
+        if margin > 0.01:  # Start getting suspicious at 1%
+            margin_suspicion = min(0.2, (margin - 0.01) / 0.04)  # Max 0.2 at margin 3%+
+            suspicion_score += margin_suspicion
+            if margin > 0.02:
+                suspicious_factors.append(f"Margin={margin:.4f}")
+        
+        # Cap at 1.0
+        suspicion_score = min(1.0, suspicion_score)
+        
+        if suspicious_factors:
+            logger.info(f"🔍 Suspicion score: {suspicion_score:.3f} for metrics: {', '.join(suspicious_factors)}")
+        
+        return suspicion_score
+    
+    def _should_check_pnl(self, sharpe: float, fitness: float, margin: float) -> Tuple[bool, str]:
+        """
+        Determine if PnL should be checked based on suspicion score
+        Returns: (should_check, reason)
+        """
+        suspicion_score = self._calculate_suspicion_score(sharpe, fitness, margin)
+        
+        # Track suspicion score
+        self.pnl_check_stats['suspicion_scores'].append(suspicion_score)
+        
+        # Mandatory check threshold (100% probability)
+        if suspicion_score >= 0.8:
+            self.pnl_check_stats['mandatory_checks'] += 1
+            return True, f"MANDATORY PnL check - suspicion score {suspicion_score:.3f} >= 0.8"
+        
+        # High probability check (80% chance)
+        elif suspicion_score >= 0.6:
+            check_probability = 0.8
+            should_check = random.random() < check_probability
+            if should_check:
+                self.pnl_check_stats['probability_checks'] += 1
+            return should_check, f"High probability PnL check - suspicion {suspicion_score:.3f}, {check_probability*100:.0f}% chance"
+        
+        # Medium probability check (50% chance)
+        elif suspicion_score >= 0.3:
+            check_probability = 0.5
+            should_check = random.random() < check_probability
+            if should_check:
+                self.pnl_check_stats['probability_checks'] += 1
+            return should_check, f"Medium probability PnL check - suspicion {suspicion_score:.3f}, {check_probability*100:.0f}% chance"
+        
+        # Low probability check (20% chance)
+        elif suspicion_score >= 0.1:
+            check_probability = 0.2
+            should_check = random.random() < check_probability
+            if should_check:
+                self.pnl_check_stats['probability_checks'] += 1
+            return should_check, f"Low probability PnL check - suspicion {suspicion_score:.3f}, {check_probability*100:.0f}% chance"
+        
+        # Very low probability check (5% chance)
+        else:
+            check_probability = 0.05
+            should_check = random.random() < check_probability
+            if should_check:
+                self.pnl_check_stats['probability_checks'] += 1
+            return should_check, f"Very low probability PnL check - suspicion {suspicion_score:.3f}, {check_probability*100:.0f}% chance"
+    
+    def track_template_quality(self, template: str, alpha_id: str, sharpe: float = 0, fitness: float = 0, margin: float = 0) -> bool:
         """
         Track template quality based on PnL data
         Returns: True if template should be kept, False if it should be deleted
@@ -1795,13 +2013,14 @@ Generate {num_templates} templates:"""
         # Create template hash for tracking
         template_hash = hash(template)
         
-        # Check PnL data quality
-        is_good_quality, reason = self.check_pnl_data_quality(alpha_id)
+        # Check PnL data quality with metrics for 'too good to be true' detection
+        is_good_quality, reason = self.check_pnl_data_quality(alpha_id, sharpe, fitness, margin)
         
         # Initialize tracking if not exists
         if template_hash not in self.template_quality_tracker:
             self.template_quality_tracker[template_hash] = {
                 'zero_pnl_count': 0,
+                'flatlined_count': 0,
                 'total_attempts': 0,
                 'template': template
             }
@@ -1810,16 +2029,29 @@ Generate {num_templates} templates:"""
         tracker['total_attempts'] += 1
         
         if not is_good_quality:
-            tracker['zero_pnl_count'] += 1
-            logger.warning(f"⚠️ Poor PnL quality for template: {template[:50]}...")
-            logger.warning(f"   Reason: {reason}")
-            logger.warning(f"   Zero PnL count: {tracker['zero_pnl_count']}/{self.max_zero_pnl_attempts}")
-            
-            # Check if template should be deleted
-            if tracker['zero_pnl_count'] >= self.max_zero_pnl_attempts:
-                logger.error(f"🗑️ DELETING template due to poor PnL quality: {template[:50]}...")
-                logger.error(f"   Total attempts: {tracker['total_attempts']}, Zero PnL: {tracker['zero_pnl_count']}")
-                return False  # Delete template
+            # Check if it's specifically a flatlined PnL curve
+            if "FLATLINED PnL curve" in reason:
+                tracker['flatlined_count'] += 1
+                logger.error(f"🚨 FLATLINED PnL detected for template: {template[:50]}...")
+                logger.error(f"   Reason: {reason}")
+                logger.error(f"   Flatlined count: {tracker['flatlined_count']}")
+                
+                # Immediately blacklist templates that produce flatlined PnL curves
+                if tracker['flatlined_count'] >= 1:  # Zero tolerance for flatlined PnL
+                    logger.error(f"🗑️ IMMEDIATELY BLACKLISTING template due to flatlined PnL: {template[:50]}...")
+                    logger.error(f"   This is a 'too good to be true' alpha with fake metrics")
+                    return False  # Delete template immediately
+            else:
+                tracker['zero_pnl_count'] += 1
+                logger.warning(f"⚠️ Poor PnL quality for template: {template[:50]}...")
+                logger.warning(f"   Reason: {reason}")
+                logger.warning(f"   Zero PnL count: {tracker['zero_pnl_count']}/{self.max_zero_pnl_attempts}")
+                
+                # Check if template should be deleted for other poor quality reasons
+                if tracker['zero_pnl_count'] >= self.max_zero_pnl_attempts:
+                    logger.error(f"🗑️ DELETING template due to poor PnL quality: {template[:50]}...")
+                    logger.error(f"   Total attempts: {tracker['total_attempts']}, Zero PnL: {tracker['zero_pnl_count']}")
+                    return False  # Delete template
         else:
             logger.info(f"✅ Good PnL quality for template: {template[:50]}...")
             logger.info(f"   {reason}")
@@ -1827,12 +2059,89 @@ Generate {num_templates} templates:"""
         return True  # Keep template
     
     def is_template_blacklisted(self, template: str) -> bool:
-        """Check if a template is blacklisted due to poor PnL quality"""
+        """Check if a template is blacklisted due to poor PnL quality or flatlined PnL curves"""
         template_hash = hash(template)
         if template_hash in self.template_quality_tracker:
             tracker = self.template_quality_tracker[template_hash]
-            return tracker['zero_pnl_count'] >= self.max_zero_pnl_attempts
+            # Check for flatlined PnL (immediate blacklist) or poor quality (after multiple attempts)
+            return (tracker['flatlined_count'] >= 1 or 
+                    tracker['zero_pnl_count'] >= self.max_zero_pnl_attempts)
         return False
+    
+    def save_blacklist_to_file(self, filename: str = "alpha_blacklist.json"):
+        """Save the current blacklist to a file for persistence"""
+        blacklisted_templates = []
+        for template_hash, tracker in self.template_quality_tracker.items():
+            if (tracker['flatlined_count'] >= 1 or 
+                tracker['zero_pnl_count'] >= self.max_zero_pnl_attempts):
+                blacklisted_templates.append({
+                    'template_hash': template_hash,
+                    'template': tracker['template'],
+                    'flatlined_count': tracker['flatlined_count'],
+                    'zero_pnl_count': tracker['zero_pnl_count'],
+                    'total_attempts': tracker['total_attempts']
+                })
+        
+        with open(filename, 'w') as f:
+            json.dump(blacklisted_templates, f, indent=2)
+        
+        logger.info(f"Saved {len(blacklisted_templates)} blacklisted templates to {filename}")
+    
+    def load_blacklist_from_file(self, filename: str = "alpha_blacklist.json"):
+        """Load blacklist from file for persistence"""
+        if not os.path.exists(filename):
+            return
+        
+        try:
+            with open(filename, 'r') as f:
+                blacklisted_templates = json.load(f)
+            
+            for item in blacklisted_templates:
+                template_hash = item['template_hash']
+                self.template_quality_tracker[template_hash] = {
+                    'template': item['template'],
+                    'flatlined_count': item['flatlined_count'],
+                    'zero_pnl_count': item['zero_pnl_count'],
+                    'total_attempts': item['total_attempts']
+                }
+            
+            logger.info(f"Loaded {len(blacklisted_templates)} blacklisted templates from {filename}")
+        except Exception as e:
+            logger.error(f"Error loading blacklist from {filename}: {e}")
+    
+    def get_pnl_check_statistics(self) -> Dict:
+        """Get statistics about PnL checking system"""
+        stats = self.pnl_check_stats.copy()
+        
+        if stats['suspicion_scores']:
+            stats['avg_suspicion_score'] = sum(stats['suspicion_scores']) / len(stats['suspicion_scores'])
+            stats['max_suspicion_score'] = max(stats['suspicion_scores'])
+            stats['min_suspicion_score'] = min(stats['suspicion_scores'])
+        else:
+            stats['avg_suspicion_score'] = 0.0
+            stats['max_suspicion_score'] = 0.0
+            stats['min_suspicion_score'] = 0.0
+        
+        # Calculate check rates
+        total_evaluations = stats['total_checks'] + stats['skipped_checks']
+        if total_evaluations > 0:
+            stats['check_rate'] = stats['total_checks'] / total_evaluations
+            stats['mandatory_rate'] = stats['mandatory_checks'] / total_evaluations
+            stats['probability_rate'] = stats['probability_checks'] / total_evaluations
+            stats['skip_rate'] = stats['skipped_checks'] / total_evaluations
+        else:
+            stats['check_rate'] = 0.0
+            stats['mandatory_rate'] = 0.0
+            stats['probability_rate'] = 0.0
+            stats['skip_rate'] = 0.0
+        
+        # Calculate flatlined detection rate
+        if stats['total_checks'] > 0:
+            stats['flatlined_rate'] = stats['flatlined_detected'] / stats['total_checks']
+        else:
+            stats['flatlined_rate'] = 0.0
+        
+        return stats
     
     def filter_blacklisted_templates(self, templates: List[Dict]) -> List[Dict]:
         """Filter out blacklisted templates from a list"""
@@ -2171,10 +2480,17 @@ Generate {num_templates} templates:"""
                             shortCount > 0  # Has short positions
                         )
                         
-                        is_truly_successful = has_meaningful_metrics
+                        # Check PnL data quality for successful simulations
+                        pnl_quality_ok = True
+                        if has_meaningful_metrics:
+                            pnl_quality_ok = self.track_template_quality(template['template'], alpha_id, sharpe, fitness, margin)
+                        
+                        # Only consider truly successful if both metrics and PnL quality are good
+                        is_truly_successful = has_meaningful_metrics and pnl_quality_ok
                         
                         logger.info(f"Alpha {alpha_id} metrics: Sharpe={sharpe}, Fitness={fitness}, Turnover={turnover}, Returns={returns}")
                         logger.info(f"Alpha {alpha_id} positions: Long={longCount}, Short={shortCount}")
+                        logger.info(f"Alpha {alpha_id} PnL quality: {pnl_quality_ok}")
                         logger.info(f"Alpha {alpha_id} success: {is_truly_successful}")
                         
                         return TemplateResult(
@@ -2487,6 +2803,9 @@ def main():
         # Save final results
         generator.save_results(results, args.output)
         
+        # Save blacklist for persistence
+        generator.save_blacklist_to_file()
+        
         # Print final summary
         print(f"\n{'='*70}")
         print("🎉 TRUE CONCURRENT TEMPLATE GENERATION COMPLETE!")
@@ -2505,6 +2824,19 @@ def main():
         print(f"   Progress saved to: {args.progress_file}")
         print(f"   Smart Plan Used: {generator.slot_plans}")
         print(f"   Max Concurrent: {generator.max_concurrent}")
+        
+        # Display PnL checking statistics
+        pnl_stats = generator.get_pnl_check_statistics()
+        print(f"\n🔍 PnL Checking Statistics:")
+        print(f"   Total evaluations: {pnl_stats['total_checks'] + pnl_stats['skipped_checks']}")
+        print(f"   PnL checks performed: {pnl_stats['total_checks']}")
+        print(f"   Checks skipped: {pnl_stats['skipped_checks']}")
+        print(f"   Check rate: {pnl_stats['check_rate']*100:.1f}%")
+        print(f"   Mandatory checks: {pnl_stats['mandatory_checks']} ({pnl_stats['mandatory_rate']*100:.1f}%)")
+        print(f"   Probability checks: {pnl_stats['probability_checks']} ({pnl_stats['probability_rate']*100:.1f}%)")
+        print(f"   Flatlined alphas detected: {pnl_stats['flatlined_detected']} ({pnl_stats['flatlined_rate']*100:.1f}% of checks)")
+        print(f"   Avg suspicion score: {pnl_stats['avg_suspicion_score']:.3f}")
+        print(f"   Max suspicion score: {pnl_stats['max_suspicion_score']:.3f}")
         
     except Exception as e:
         logger.error(f"Enhanced template generation failed: {e}")
