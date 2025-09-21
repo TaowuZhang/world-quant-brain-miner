@@ -396,6 +396,21 @@ class EnhancedTemplateGeneratorV2:
         
         self.setup_auth()
         
+        # Optimization tracking
+        self.optimization_queue = []  # Queue of alphas to optimize
+        self.optimization_results = {}  # Track optimization history
+        self.max_optimization_iterations = 10
+        
+        # Three-phase system tracking
+        self.total_simulations = 0
+        self.phase_switch_threshold = 300
+        self.exploitation_end_threshold = 1300  # 300 + 1000 exploitation
+        self.current_phase = "explore_exploit"  # "explore_exploit", "exploit", "loop"
+        self.exploitation_phase = False
+        self.top_templates = []  # Track top-performing templates for exploitation
+        self.exploitation_bandit = None  # Separate bandit for exploitation phase
+        self.loop_count = 0  # Track number of loops completed
+        
         # Region configurations with pyramid multipliers
         self.region_configs = {
             "USA": RegionConfig("USA", "TOP3000", 1),
@@ -609,6 +624,447 @@ LEARN FROM THESE MISTAKES:
 - Pay attention to the specific error messages above
 """
         return failure_guidance
+    
+    def is_good_alpha(self, result: TemplateResult) -> bool:
+        """Check if an alpha meets the criteria for optimization"""
+        if not result.success:
+            return False
+        
+        # Check criteria: 0.75+ Sharpe, 30%+ margin
+        sharpe_threshold = 0.75
+        margin_threshold = 0.30  # 30% margin
+        
+        return (result.sharpe >= sharpe_threshold and 
+                result.margin >= margin_threshold)
+    
+    def add_to_optimization_queue(self, result: TemplateResult):
+        """Add a good alpha to the optimization queue"""
+        if self.is_good_alpha(result):
+            optimization_id = f"{result.template}_{result.region}_{int(time.time())}"
+            self.optimization_queue.append({
+                'id': optimization_id,
+                'template': result.template,
+                'region': result.region,
+                'current_result': result,
+                'iteration': 0,
+                'best_result': result,
+                'improvement_count': 0
+            })
+            logger.info(f"🎯 Added alpha to optimization queue: {optimization_id}")
+            logger.info(f"   Sharpe: {result.sharpe:.3f}, Margin: {result.margin:.3f}")
+    
+    def optimize_alpha_with_llm(self, optimization_item: Dict) -> Dict:
+        """Use DeepSeek API to optimize an alpha iteratively"""
+        template = optimization_item['template']
+        region = optimization_item['region']
+        current_result = optimization_item['current_result']
+        iteration = optimization_item['iteration']
+        
+        # Get all available operators for optimization
+        all_operators = self.operators
+        data_fields = self.get_data_fields_for_region(region, current_result.settings.delay)
+        
+        # Create optimization prompt
+        operators_desc = []
+        for op in all_operators:
+            operators_desc.append(f"- {op['name']}: {op['description']} (Definition: {op['definition']})")
+        
+        fields_desc = []
+        for field in data_fields:
+            fields_desc.append(f"- {field['id']}: {field.get('description', 'No description')}")
+        
+        # Current performance metrics
+        current_metrics = f"""
+Current Performance:
+- Sharpe Ratio: {current_result.sharpe:.3f}
+- Margin: {current_result.margin:.3f}
+- Returns: {current_result.returns:.3f}
+- Drawdown: {current_result.drawdown:.3f}
+- Turnover: {current_result.turnover:.3f}
+- Fitness: {current_result.fitness:.3f}
+"""
+        
+        optimization_prompt = f"""You are an expert quantitative analyst optimizing a WorldQuant Brain alpha expression.
+
+CURRENT ALPHA TO OPTIMIZE:
+{template}
+
+{current_metrics}
+
+OPTIMIZATION GOAL:
+Improve the Sharpe ratio while maintaining or improving margin, returns, and reducing drawdown.
+
+AVAILABLE OPERATORS (USE ANY COMBINATION):
+{chr(10).join(operators_desc)}
+
+AVAILABLE DATA FIELDS:
+{chr(10).join(fields_desc)}
+
+OPTIMIZATION INSTRUCTIONS:
+1. Analyze the current alpha's strengths and weaknesses
+2. Suggest 3 improved versions that could perform better
+3. Focus on:
+   - Increasing Sharpe ratio
+   - Maintaining/improving margin (target >30%)
+   - Reducing drawdown
+   - Optimizing turnover
+4. Use different operator combinations and parameters
+5. Each suggestion should be a complete alpha expression
+6. Provide brief reasoning for each improvement
+
+Generate 3 optimized versions:
+1. [Your first optimized alpha expression]
+2. [Your second optimized alpha expression]  
+3. [Your third optimized alpha expression]
+
+Reasoning for each improvement:
+1. [Why this version should perform better]
+2. [Why this version should perform better]
+3. [Why this version should perform better]"""
+
+        # Call DeepSeek API for optimization
+        response = self.call_deepseek_api(optimization_prompt)
+        if not response:
+            logger.error(f"Failed to get optimization suggestions for iteration {iteration}")
+            return optimization_item
+        
+        # Parse the response to extract optimized templates
+        optimized_templates = self.parse_optimization_response(response)
+        
+        return {
+            **optimization_item,
+            'optimized_templates': optimized_templates,
+            'optimization_prompt': optimization_prompt,
+            'llm_response': response
+        }
+    
+    def parse_optimization_response(self, response: str) -> List[str]:
+        """Parse LLM response to extract optimized alpha expressions"""
+        templates = []
+        lines = response.strip().split('\n')
+        
+        for line in lines:
+            line = line.strip()
+            # Look for lines that start with numbers (1., 2., 3.) or contain alpha expressions
+            if (line.startswith(('1.', '2.', '3.')) or 
+                ('(' in line and ')' in line and any(op in line for op in ['ts_', 'group_', 'winsorize', 'rank', 'delta', 'zscore']))):
+                # Clean up the line
+                template = line
+                if template.startswith(('1.', '2.', '3.')):
+                    template = template[2:].strip()
+                if template and template not in templates:
+                    templates.append(template)
+        
+        return templates[:3]  # Return max 3 templates
+    
+    def process_optimization_queue(self):
+        """Process the optimization queue with iterative LLM optimization"""
+        if not self.optimization_queue:
+            return
+        
+        logger.info(f"🚀 Starting optimization of {len(self.optimization_queue)} alphas")
+        
+        for optimization_item in self.optimization_queue[:]:  # Copy to avoid modification during iteration
+            try:
+                self._optimize_single_alpha(optimization_item)
+            except Exception as e:
+                logger.error(f"Error optimizing alpha {optimization_item['id']}: {e}")
+                continue
+        
+        # Clear processed items
+        self.optimization_queue.clear()
+        logger.info("✅ Optimization queue processing completed")
+    
+    def _optimize_single_alpha(self, optimization_item: Dict):
+        """Optimize a single alpha through iterative LLM optimization"""
+        alpha_id = optimization_item['id']
+        logger.info(f"🔧 Starting optimization for alpha: {alpha_id}")
+        
+        best_result = optimization_item['best_result']
+        iteration = 0
+        
+        while iteration < self.max_optimization_iterations:
+            iteration += 1
+            logger.info(f"🔄 Optimization iteration {iteration}/{self.max_optimization_iterations} for {alpha_id}")
+            
+            # Get LLM optimization suggestions
+            optimization_item['iteration'] = iteration
+            optimized_item = self.optimize_alpha_with_llm(optimization_item)
+            
+            if not optimized_item.get('optimized_templates'):
+                logger.warning(f"No optimization suggestions from LLM for {alpha_id}")
+                break
+            
+            # Test the optimized templates
+            best_improvement = None
+            for template in optimized_item['optimized_templates']:
+                try:
+                    # Create a new simulation for the optimized template
+                    test_result = self._test_optimized_template(template, optimization_item['region'], best_result.settings)
+                    
+                    if test_result and test_result.success:
+                        # Check if this is an improvement
+                        if self._is_improvement(test_result, best_result):
+                            if not best_improvement or test_result.sharpe > best_improvement.sharpe:
+                                best_improvement = test_result
+                                logger.info(f"📈 Found improvement: Sharpe {test_result.sharpe:.3f} > {best_result.sharpe:.3f}")
+                except Exception as e:
+                    logger.error(f"Error testing optimized template: {e}")
+                    continue
+            
+            if best_improvement:
+                # Update with the best improvement
+                optimization_item['current_result'] = best_improvement
+                optimization_item['best_result'] = best_improvement
+                optimization_item['improvement_count'] += 1
+                best_result = best_improvement
+                
+                logger.info(f"✅ Iteration {iteration} improved alpha: Sharpe {best_result.sharpe:.3f}, Margin {best_result.margin:.3f}")
+            else:
+                logger.info(f"❌ No improvement found in iteration {iteration}, stopping optimization")
+                break
+        
+        # Save final optimized result
+        self.optimization_results[alpha_id] = {
+            'original': optimization_item['best_result'],
+            'final': best_result,
+            'iterations': iteration,
+            'improvements': optimization_item['improvement_count']
+        }
+        
+        logger.info(f"🏁 Optimization completed for {alpha_id}: {optimization_item['improvement_count']} improvements in {iteration} iterations")
+    
+    def _test_optimized_template(self, template: str, region: str, settings: SimulationSettings) -> TemplateResult:
+        """Test an optimized template by submitting it for simulation"""
+        try:
+            # Submit the optimized template for simulation
+            simulation_response = self.sess.post(
+                'https://api.worldquantbrain.com/alphas',
+                json={
+                    'expression': template,
+                    'universe': self.region_configs[region].universe,
+                    'delay': settings.delay,
+                    'neutralization': settings.neutralization
+                }
+            )
+            
+            if simulation_response.status_code != 201:
+                logger.error(f"Failed to submit optimized template: {simulation_response.status_code}")
+                return None
+            
+            alpha_id = simulation_response.json().get('id')
+            if not alpha_id:
+                logger.error("No alpha ID returned for optimized template")
+                return None
+            
+            # Monitor the simulation
+            return self._monitor_optimized_simulation(alpha_id, template, region, settings)
+            
+        except Exception as e:
+            logger.error(f"Error testing optimized template: {e}")
+            return None
+    
+    def _monitor_optimized_simulation(self, alpha_id: str, template: str, region: str, settings: SimulationSettings) -> TemplateResult:
+        """Monitor an optimized simulation until completion"""
+        max_wait_time = 300  # 5 minutes max wait
+        start_time = time.time()
+        
+        while time.time() - start_time < max_wait_time:
+            try:
+                alpha_response = self.sess.get(f'https://api.worldquantbrain.com/alphas/{alpha_id}')
+                if alpha_response.status_code != 200:
+                    time.sleep(10)
+                    continue
+                
+                alpha_data = alpha_response.json()
+                status = alpha_data.get('status')
+                
+                if status == 'SUCCESS':
+                    is_data = alpha_data.get('is', {})
+                    sharpe = is_data.get('sharpe', 0)
+                    fitness = is_data.get('fitness', 0)
+                    turnover = is_data.get('turnover', 0)
+                    returns = is_data.get('returns', 0)
+                    drawdown = is_data.get('drawdown', 0)
+                    margin = is_data.get('margin', 0)
+                    longCount = is_data.get('longCount', 0)
+                    shortCount = is_data.get('shortCount', 0)
+                    
+                    return TemplateResult(
+                        template=template,
+                        region=region,
+                        settings=settings,
+                        sharpe=sharpe,
+                        fitness=fitness,
+                        turnover=turnover,
+                        returns=returns,
+                        drawdown=drawdown,
+                        margin=margin,
+                        longCount=longCount,
+                        shortCount=shortCount,
+                        success=True,
+                        timestamp=time.time()
+                    )
+                elif status in ['FAILED', 'ERROR']:
+                    logger.error(f"Optimized simulation failed: {alpha_id}")
+                    return None
+                
+                time.sleep(10)  # Wait 10 seconds before checking again
+                
+            except Exception as e:
+                logger.error(f"Error monitoring optimized simulation: {e}")
+                time.sleep(10)
+        
+        logger.error(f"Optimized simulation timed out: {alpha_id}")
+        return None
+    
+    def _is_improvement(self, new_result: TemplateResult, current_best: TemplateResult) -> bool:
+        """Check if the new result is an improvement over the current best"""
+        # Primary criteria: Sharpe ratio improvement
+        sharpe_improvement = new_result.sharpe > current_best.sharpe
+        
+        # Secondary criteria: maintain or improve margin
+        margin_maintained = new_result.margin >= current_best.margin * 0.9  # Allow 10% margin drop
+        
+        # Tertiary criteria: better return/drawdown ratio
+        current_ratio = current_best.returns / max(current_best.drawdown, 0.001)
+        new_ratio = new_result.returns / max(new_result.drawdown, 0.001)
+        ratio_improvement = new_ratio > current_ratio * 0.95  # Allow 5% ratio drop
+        
+        return sharpe_improvement and margin_maintained and ratio_improvement
+    
+    def update_simulation_count(self):
+        """Update simulation count and check for phase switches"""
+        self.total_simulations += 1
+        
+        # Phase 1 to Phase 2: Switch to exploitation at 300 simulations
+        if (self.current_phase == "explore_exploit" and 
+            self.total_simulations >= self.phase_switch_threshold):
+            self.current_phase = "exploit"
+            self.exploitation_phase = True
+            self._initialize_exploitation_phase()
+            logger.info(f"🔄 PHASE SWITCH: Switching to pure exploitation mode after {self.total_simulations} simulations")
+            logger.info(f"🎯 EXPLOITATION PHASE: Will now use top-performing templates with dataset substitution across regions")
+        
+        # Phase 2 to Phase 3: Switch back to explore/exploit at 1300 simulations
+        elif (self.current_phase == "exploit" and 
+              self.total_simulations >= self.exploitation_end_threshold):
+            self.current_phase = "loop"
+            self.exploitation_phase = False
+            self.loop_count += 1
+            logger.info(f"🔄 PHASE SWITCH: Switching back to explore/exploit mode after {self.total_simulations} simulations")
+            logger.info(f"🔄 LOOP PHASE: Loop #{self.loop_count} - Resuming normal explore/exploit with new discoveries")
+            
+            # Reset for new loop
+            self._reset_for_new_loop()
+    
+    def _reset_for_new_loop(self):
+        """Reset system for new explore/exploit loop"""
+        # Reset phase tracking
+        self.current_phase = "explore_exploit"
+        self.exploitation_phase = False
+        
+        # Clear old top templates to allow new discoveries
+        self.top_templates = []
+        self.exploitation_bandit = None
+        
+        # Reset simulation count for new loop
+        self.total_simulations = 0
+        
+        logger.info(f"🔄 LOOP RESET: Starting new explore/exploit cycle (Loop #{self.loop_count})")
+        logger.info(f"📊 New cycle will run: 0-300 explore/exploit, 300-1300 exploit, then loop again")
+    
+    def _initialize_exploitation_phase(self):
+        """Initialize exploitation phase with top templates"""
+        # Collect all successful templates from results
+        all_successful = []
+        for region, results in self.all_results.get('simulation_results', {}).items():
+            for result in results:
+                if result.get('success', False):
+                    all_successful.append({
+                        'template': result.get('template', ''),
+                        'region': result.get('region', ''),
+                        'sharpe': result.get('sharpe', 0),
+                        'margin': result.get('margin', 0),
+                        'fitness': result.get('fitness', 0),
+                        'returns': result.get('returns', 0),
+                        'drawdown': result.get('drawdown', 0)
+                    })
+        
+        # Sort by Sharpe ratio and take top 50
+        self.top_templates = sorted(all_successful, key=lambda x: x['sharpe'], reverse=True)[:50]
+        
+        # Initialize exploitation bandit
+        self.exploitation_bandit = MultiArmBandit(exploration_rate=0.0, decay_rate=0.0, decay_interval=1000)  # Pure exploitation
+        
+        logger.info(f"📊 Exploitation phase initialized with {len(self.top_templates)} top templates")
+        if self.top_templates:
+            best = self.top_templates[0]
+            logger.info(f"🏆 Best template: Sharpe={best['sharpe']:.3f}, Margin={best['margin']:.3f}")
+            logger.info(f"🎯 Exploitation strategy: Dataset substitution across regions (USA, GLB, EUR, ASI, CHN)")
+            logger.info(f"📈 Phase status: {self.current_phase} | Simulations: {self.total_simulations} | Loop: #{self.loop_count}")
+    
+    def get_exploitation_template(self) -> Dict:
+        """Get a template for exploitation phase with dataset substitution"""
+        if not self.top_templates:
+            logger.warning("No top templates available for exploitation")
+            return None
+        
+        # Select template using exploitation bandit
+        template_ids = [f"template_{i}" for i in range(len(self.top_templates))]
+        action, selected_id = self.exploitation_bandit.choose_action(template_ids)
+        
+        template_idx = int(selected_id.split('_')[1])
+        selected_template = self.top_templates[template_idx]
+        
+        # Choose a different region for dataset substitution
+        original_region = selected_template['region']
+        available_regions = [r for r in self.regions if r != original_region]
+        target_region = random.choice(available_regions)
+        
+        return {
+            'template': selected_template['template'],
+            'original_region': original_region,
+            'target_region': target_region,
+            'original_sharpe': selected_template['sharpe'],
+            'original_margin': selected_template['margin']
+        }
+    
+    def create_exploitation_templates(self, num_templates: int = 10) -> List[Dict]:
+        """Create templates for exploitation phase with dataset substitution"""
+        if not self.exploitation_phase:
+            return []
+        
+        templates = []
+        for _ in range(num_templates):
+            exploitation_data = self.get_exploitation_template()
+            if exploitation_data:
+                templates.append({
+                    'template': exploitation_data['template'],
+                    'region': exploitation_data['target_region'],
+                    'original_region': exploitation_data['original_region'],
+                    'original_sharpe': exploitation_data['original_sharpe'],
+                    'original_margin': exploitation_data['original_margin'],
+                    'exploitation': True
+                })
+        
+        return templates
+    
+    def update_exploitation_bandit(self, result: TemplateResult, original_sharpe: float):
+        """Update exploitation bandit with results"""
+        if not self.exploitation_bandit or not result.success:
+            return
+        
+        # Calculate reward based on improvement
+        improvement = result.sharpe - original_sharpe
+        reward = max(0, improvement * 2)  # Reward for improvement
+        
+        # Find the template index and update bandit
+        for i, template in enumerate(self.top_templates):
+            if template['template'] == result.template:
+                arm_id = f"template_{i}"
+                self.exploitation_bandit.update_arm(arm_id, reward)
+                break
     
     def get_data_fields_for_region(self, region: str, delay: int = 1) -> List[Dict]:
         """Get data fields for a specific region and delay with local caching"""
@@ -903,6 +1359,16 @@ LEARN FROM THESE MISTAKES:
         """Generate templates for a specific region with validation"""
         logger.info(f"Generating {num_templates} templates for region: {region}")
         
+        # Check if we're in exploitation phase
+        if self.exploitation_phase:
+            logger.info(f"🎯 EXPLOITATION PHASE: Using top-performing templates with dataset substitution for {region}")
+            return self.create_exploitation_templates(num_templates)
+        
+        # Check if we're in loop phase (back to explore/exploit)
+        if self.current_phase == "loop":
+            logger.info(f"🔄 LOOP PHASE: Resuming normal explore/exploit template generation for {region}")
+            # Continue with normal template generation
+        
         # Get data fields for this region with optimal delay based on pyramid multipliers
         config = self.region_configs[region]
         optimal_delay = self.select_optimal_delay(region)
@@ -916,11 +1382,18 @@ LEARN FROM THESE MISTAKES:
         logger.info(f"Available fields for {region} (delay={optimal_delay}): {len(valid_fields)} fields")
         logger.info(f"Sample fields: {valid_fields[:5]}")
         
-        # Select a subset of operators and fields for template generation
-        selected_operators = random.sample(self.operators, min(20, len(self.operators)))
-        selected_fields = random.sample(data_fields, min(15, len(data_fields)))
-        
-        logger.info(f"Selected {len(selected_fields)} fields for template generation")
+        # Generate random number of operators (1-6) for higher margin chances
+        # Special case: EUR region has no operator or field limits
+        if region == "EUR":
+            max_operators = len(self.operators)  # Use all operators for EUR
+            selected_operators = self.operators  # Use all operators
+            selected_fields = data_fields  # Use all available data fields
+            logger.info(f"EUR region: Using ALL {len(selected_operators)} operators and {len(selected_fields)} fields (no limits)")
+        else:
+            max_operators = random.randint(1, 6)
+            selected_operators = random.sample(self.operators, min(max_operators, len(self.operators)))
+            selected_fields = data_fields  # Use all available data fields
+            logger.info(f"Selected {len(selected_operators)} operators (max: {max_operators}) and {len(selected_fields)} fields for template generation")
         
         # Create prompt for DeepSeek with better instructions
         operators_desc = []
@@ -946,6 +1419,18 @@ LEARN FROM THESE MISTAKES:
         # Add failure patterns to help LLM learn
         failure_guidance = self.get_failure_guidance(region)
 
+        # Create region-specific prompt
+        if region == "EUR":
+            complexity_constraints = "TEMPLATE COMPLEXITY: NO LIMITS - Use any number of operators and data fields for maximum flexibility"
+            operator_instruction = "Available Operators (USE ANY COMBINATION - NO LIMITS):"
+            field_instruction = "Available Data Fields (USE ANY COMBINATION - NO LIMITS - These are the EXACT field names available for delay={optimal_delay}):"
+            requirement_15 = "15. EUR REGION: Use any number of operators and data fields for maximum complexity and potential"
+        else:
+            complexity_constraints = f"TEMPLATE COMPLEXITY CONSTRAINTS:\n- Maximum {max_operators} operators per template (for higher margin chances)"
+            operator_instruction = f"Available Operators (USE ONLY THESE - MAX {max_operators} PER TEMPLATE):"
+            field_instruction = f"Available Data Fields (USE ONLY THESE - These are the EXACT field names available for delay={optimal_delay}):"
+            requirement_15 = f"15. KEEP TEMPLATES SIMPLE: Use maximum {max_operators} operators per template"
+
         prompt = f"""Generate {num_templates} diverse and creative WorldQuant Brain alpha expression templates for the {region} region.
 
 Region Configuration:
@@ -954,10 +1439,12 @@ Region Configuration:
 - Delay: {optimal_delay} (selected based on pyramid multiplier: {self.pyramid_multipliers[region].get(str(optimal_delay), 1.0)})
 - Max Trade: {config.max_trade}
 
-Available Operators (USE ONLY THESE):
+{complexity_constraints}
+
+{operator_instruction}
 {chr(10).join(operators_desc)}
 
-Available Data Fields (USE ONLY THESE - These are the EXACT field names available for delay={optimal_delay}):
+{field_instruction}
 {chr(10).join(fields_desc)}{failure_guidance}
 
 PARAMETER GUIDELINES:
@@ -978,6 +1465,7 @@ CRITICAL REQUIREMENTS:
 12. Read operator definitions carefully to understand parameter requirements
 13. AVOID the failure patterns shown above - learn from previous mistakes
 14. Double-check parameter counts and types for each operator
+{requirement_15}
 
 VALID EXAMPLES:
 ts_rank(ts_delta(close, 1), 20)
@@ -1403,39 +1891,50 @@ Generate {num_templates} templates:"""
                             # Update progress tracker
                             self.progress_tracker.update_simulation_progress(is_truly_successful, result.sharpe, result.template)
                             
+                            # Check if this alpha qualifies for optimization
                             if is_truly_successful:
+                                self.add_to_optimization_queue(result)
                                 logger.info(f"✅ Template simulation completed successfully: {template_data['template'][:50]}...")
                                 logger.info(f"📊 Alpha {alpha_id} Performance: Sharpe={sharpe}, Fitness={fitness}, Turnover={turnover}, Returns={returns}")
                                 logger.info(f"📊 Alpha {alpha_id} Positions: Long={longCount}, Short={shortCount}")
                                 logger.info(f"📊 Alpha {alpha_id} PnL Quality: Good")
+                                
+                                # Update exploitation bandit if in exploitation phase
+                                if self.exploitation_phase and template_data.get('exploitation', False):
+                                    original_sharpe = template_data.get('original_sharpe', 0)
+                                    self.update_exploitation_bandit(result, original_sharpe)
+                                    logger.info(f"🎯 Exploitation result: Original Sharpe={original_sharpe:.3f}, New Sharpe={result.sharpe:.3f}")
+                            
+                            # Update simulation count and check for phase switch
+                            self.update_simulation_count()
+                        else:
+                            if has_meaningful_metrics and not pnl_quality_ok:
+                                logger.info(f"⚠️ Template simulation completed with good metrics but poor PnL quality: {template_data['template'][:50]}...")
+                                logger.info(f"📊 Alpha {alpha_id} Values: Sharpe={sharpe}, Fitness={fitness}, Turnover={turnover}, Returns={returns}")
+                                logger.info(f"📊 Alpha {alpha_id} PnL Quality: Poor - No reward given")
                             else:
-                                if has_meaningful_metrics and not pnl_quality_ok:
-                                    logger.info(f"⚠️ Template simulation completed with good metrics but poor PnL quality: {template_data['template'][:50]}...")
-                                    logger.info(f"📊 Alpha {alpha_id} Values: Sharpe={sharpe}, Fitness={fitness}, Turnover={turnover}, Returns={returns}")
-                                    logger.info(f"📊 Alpha {alpha_id} PnL Quality: Poor - No reward given")
-                                else:
-                                    logger.info(f"⚠️ Template simulation completed but with zero/meaningless values: {template_data['template'][:50]}...")
-                                    logger.info(f"📊 Alpha {alpha_id} Values: Sharpe={sharpe}, Fitness={fitness}, Turnover={turnover}, Returns={returns}")
-                                    logger.info(f"📊 Alpha {alpha_id} Positions: Long={longCount}, Short={shortCount}")
-                                    logger.info(f"📊 Alpha {alpha_id} Success criteria: has_meaningful_metrics={has_meaningful_metrics}")
+                                logger.info(f"⚠️ Template simulation completed but with zero/meaningless values: {template_data['template'][:50]}...")
+                                logger.info(f"📊 Alpha {alpha_id} Values: Sharpe={sharpe}, Fitness={fitness}, Turnover={turnover}, Returns={returns}")
+                                logger.info(f"📊 Alpha {alpha_id} Positions: Long={longCount}, Short={shortCount}")
+                                logger.info(f"📊 Alpha {alpha_id} Success criteria: has_meaningful_metrics={has_meaningful_metrics}")
                             
-                        elif status in ['FAILED', 'ERROR']:
-                            template_data = template_mapping[progress_url]
-                            result = TemplateResult(
-                                template=template_data['template'],
-                                region=template_data['region'],
-                                settings=settings,
-                                success=False,
-                                error_message=data.get('message', 'Unknown error'),
-                                timestamp=time.time()
-                            )
-                            results.append(result)
-                            completed_urls.append(progress_url)
-                            
-                            # Update progress tracker
-                            self.progress_tracker.update_simulation_progress(False)
-                            
-                            logger.error(f"Template simulation failed: {template_data['template'][:50]}... - {data.get('message', 'Unknown error')}")
+                    elif status in ['FAILED', 'ERROR']:
+                        template_data = template_mapping[progress_url]
+                        result = TemplateResult(
+                            template=template_data['template'],
+                            region=template_data['region'],
+                            settings=settings,
+                            success=False,
+                            error_message=data.get('message', 'Unknown error'),
+                            timestamp=time.time()
+                        )
+                        results.append(result)
+                        completed_urls.append(progress_url)
+                        
+                        # Update progress tracker
+                        self.progress_tracker.update_simulation_progress(False)
+                        
+                        logger.error(f"Template simulation failed: {template_data['template'][:50]}... - {data.get('message', 'Unknown error')}")
                     
                     elif response.status_code == 401:
                         logger.info("Session expired, re-authenticating...")
@@ -1516,6 +2015,10 @@ Generate {num_templates} templates:"""
         
         # Shutdown executor
         self.executor.shutdown(wait=True)
+        
+        # Process optimization queue for good alphas
+        logger.info("🔍 Checking for alphas that qualify for optimization...")
+        self.process_optimization_queue()
         
         return self.all_results
     
@@ -1759,6 +2262,7 @@ Generate {num_templates} templates:"""
     def check_pnl_data_quality(self, alpha_id: str, sharpe: float = 0, fitness: float = 0, margin: float = 0) -> Tuple[bool, str]:
         """
         Check PnL data quality for an alpha, including detection of 'too good to be true' alphas
+        Uses exponential backoff retry for unavailable PnL data
         Returns: (is_good_quality, reason)
         """
         try:
@@ -1774,61 +2278,156 @@ Generate {num_templates} templates:"""
             self.pnl_check_stats['total_checks'] += 1
             logger.info(f"🔍 Checking PnL for alpha {alpha_id}: {check_reason}")
             
-            # Fetch PnL data from WorldQuant API
-            pnl_url = f'https://api.worldquantbrain.com/alphas/{alpha_id}/recordsets/pnl'
-            response = self.sess.get(pnl_url)
-            
-            if response.status_code != 200:
-                return False, f"Failed to fetch PnL data: {response.status_code}"
-            
-            pnl_data = response.json()
-            records = pnl_data.get('records', [])
-            
-            if not records:
-                return False, "No PnL records found"
-            
-            # Analyze PnL data quality
-            total_records = len(records)
-            zero_pnl_count = 0
-            non_zero_pnl_count = 0
-            total_pnl_sum = 0.0
-            pnl_values = []
-            
-            for record in records:
-                if len(record) >= 2:  # Ensure we have at least date and pnl
-                    pnl_value = record[1]  # PnL is the second element
-                    pnl_values.append(pnl_value)
-                    if pnl_value == 0.0:
-                        zero_pnl_count += 1
-                    else:
-                        non_zero_pnl_count += 1
-                        total_pnl_sum += abs(pnl_value)
-            
-            # Calculate quality metrics
-            zero_pnl_ratio = zero_pnl_count / total_records if total_records > 0 else 1.0
-            avg_non_zero_pnl = total_pnl_sum / non_zero_pnl_count if non_zero_pnl_count > 0 else 0.0
-            
-            # Check for flatlined PnL curve (constant values over time)
-            is_flatlined = self._detect_flatlined_pnl(pnl_values)
-            if is_flatlined:
-                self.pnl_check_stats['flatlined_detected'] += 1
-                return False, f"FLATLINED PnL curve detected - constant values over time (too good to be true alpha)"
-            
-            # Quality criteria
-            if zero_pnl_ratio > 0.8:  # More than 80% zeros
-                return False, f"Too many zero PnL values: {zero_pnl_ratio:.1%} ({zero_pnl_count}/{total_records})"
-            
-            if non_zero_pnl_count < 10:  # Less than 10 non-zero values
-                return False, f"Insufficient non-zero PnL data: {non_zero_pnl_count} values"
-            
-            if avg_non_zero_pnl < 0.001:  # Very small PnL values
-                return False, f"PnL values too small: avg={avg_non_zero_pnl:.6f}"
-            
-            # Good quality
-            return True, f"Good PnL quality: {non_zero_pnl_count}/{total_records} non-zero values, avg={avg_non_zero_pnl:.4f}"
+            # Try to fetch PnL data with exponential backoff retry
+            return self._fetch_pnl_with_retry(alpha_id)
             
         except Exception as e:
-            return False, f"Error checking PnL quality: {str(e)}"
+            logger.error(f"❌ PnL quality check failed: {str(e)}")
+            # Always reject when PnL check fails - no exceptions
+            return False, f"PnL quality check failed: {str(e)} - rejecting alpha for safety"
+    
+    def _fetch_pnl_with_retry(self, alpha_id: str, max_retries: int = 3) -> Tuple[bool, str]:
+        """
+        Fetch PnL data with exponential backoff retry
+        Returns: (is_good_quality, reason)
+        """
+        pnl_url = f'https://api.worldquantbrain.com/alphas/{alpha_id}/recordsets/pnl'
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"🔍 Fetching PnL data from: {pnl_url} (attempt {attempt + 1}/{max_retries})")
+                response = self.sess.get(pnl_url)
+                
+                if response.status_code != 200:
+                    logger.error(f"❌ Failed to fetch PnL data: {response.status_code} - {response.text}")
+                    if response.status_code == 404:
+                        return False, f"Alpha {alpha_id} not found or no PnL data available"
+                    elif response.status_code == 403:
+                        return False, f"Access denied to PnL data for alpha {alpha_id}"
+                    elif response.status_code == 401:
+                        return False, f"Authentication failed for PnL data"
+                    else:
+                        # For other errors, retry with exponential backoff
+                        if attempt < max_retries - 1:
+                            wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                            logger.warning(f"⚠️ Retrying in {wait_time} seconds...")
+                            time.sleep(wait_time)
+                            continue
+                        else:
+                            return False, f"Failed to fetch PnL data after {max_retries} attempts: {response.status_code}"
+                
+                # Check if response has content before trying to parse JSON
+                if not response.text.strip():
+                    logger.warning(f"⚠️ Empty PnL response from API (attempt {attempt + 1})")
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                        logger.warning(f"⚠️ Retrying in {wait_time} seconds...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        return False, f"Empty PnL response from API after {max_retries} attempts - no data available"
+                
+                # Check if response looks like JSON
+                if not response.text.strip().startswith('{') and not response.text.strip().startswith('['):
+                    logger.warning(f"⚠️ Non-JSON PnL response (attempt {attempt + 1}): {response.text[:100]}...")
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                        logger.warning(f"⚠️ Retrying in {wait_time} seconds...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        return False, f"Non-JSON PnL response after {max_retries} attempts: {response.text[:100]}"
+                
+                try:
+                    pnl_data = response.json()
+                    logger.info(f"📊 PnL data structure: {list(pnl_data.keys()) if isinstance(pnl_data, dict) else type(pnl_data)}")
+                except Exception as json_error:
+                    logger.warning(f"⚠️ Failed to parse PnL JSON (attempt {attempt + 1}): {json_error}")
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                        logger.warning(f"⚠️ Retrying in {wait_time} seconds...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        logger.error(f"❌ Response content: {response.text[:200]}...")
+                        return False, f"Failed to parse PnL JSON after {max_retries} attempts: {str(json_error)}"
+                
+                # If we get here, we have valid PnL data - process it
+                records = pnl_data.get('records', [])
+                logger.info(f"📈 Found {len(records)} PnL records")
+                
+                if not records:
+                    logger.warning(f"⚠️ No PnL records found for alpha {alpha_id}")
+                    return False, "No PnL records found"
+                
+                # Analyze PnL data quality
+                total_records = len(records)
+                zero_pnl_count = 0
+                non_zero_pnl_count = 0
+                total_pnl_sum = 0.0
+                pnl_values = []
+                
+                for i, record in enumerate(records):
+                    try:
+                        if len(record) >= 2:  # Ensure we have at least date and pnl
+                            pnl_value = record[1]  # PnL is the second element
+                            # Convert to float if it's a string
+                            if isinstance(pnl_value, str):
+                                pnl_value = float(pnl_value)
+                            pnl_values.append(pnl_value)
+                            if pnl_value == 0.0:
+                                zero_pnl_count += 1
+                            else:
+                                non_zero_pnl_count += 1
+                                total_pnl_sum += abs(pnl_value)
+                        else:
+                            logger.warning(f"⚠️ Skipping malformed record {i}: {record}")
+                    except (ValueError, TypeError) as parse_error:
+                        logger.warning(f"⚠️ Failed to parse PnL value in record {i}: {record} - {parse_error}")
+                        continue
+                
+                # Check if we have enough valid PnL values after parsing
+                if len(pnl_values) < 5:
+                    logger.warning(f"⚠️ Insufficient valid PnL values after parsing: {len(pnl_values)}")
+                    return False, f"Insufficient valid PnL values after parsing: {len(pnl_values)}"
+                
+                logger.info(f"📊 PnL analysis: {len(pnl_values)} valid values, {zero_pnl_count} zeros, {non_zero_pnl_count} non-zeros")
+                
+                # Calculate quality metrics
+                zero_pnl_ratio = zero_pnl_count / len(pnl_values) if len(pnl_values) > 0 else 1.0
+                avg_non_zero_pnl = total_pnl_sum / non_zero_pnl_count if non_zero_pnl_count > 0 else 0.0
+                
+                # Check for flatlined PnL curve (constant values over time)
+                is_flatlined = self._detect_flatlined_pnl(pnl_values)
+                if is_flatlined:
+                    self.pnl_check_stats['flatlined_detected'] += 1
+                    return False, f"FLATLINED PnL curve detected - constant values over time (too good to be true alpha)"
+                
+                # Quality criteria
+                if zero_pnl_ratio > 0.8:  # More than 80% zeros
+                    return False, f"Too many zero PnL values: {zero_pnl_ratio:.1%} ({zero_pnl_count}/{total_records})"
+                
+                if non_zero_pnl_count < 10:  # Less than 10 non-zero values
+                    return False, f"Insufficient non-zero PnL data: {non_zero_pnl_count} values"
+                
+                if avg_non_zero_pnl < 0.001:  # Very small PnL values
+                    return False, f"PnL values too small: avg={avg_non_zero_pnl:.6f}"
+                
+                # Good quality
+                return True, f"Good PnL quality: {non_zero_pnl_count}/{total_records} non-zero values, avg={avg_non_zero_pnl:.4f}"
+            
+            except Exception as e:
+                logger.warning(f"⚠️ Exception during PnL processing (attempt {attempt + 1}): {e}")
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                    logger.warning(f"⚠️ Retrying in {wait_time} seconds...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    return False, f"PnL processing failed after {max_retries} attempts: {str(e)}"
+        
+        # If we get here, all retries failed
+        return False, f"PnL data unavailable after {max_retries} attempts - rejecting alpha"
     
     def _detect_flatlined_pnl(self, pnl_values: List[float]) -> bool:
         """
@@ -2042,16 +2641,27 @@ Generate {num_templates} templates:"""
                     logger.error(f"   This is a 'too good to be true' alpha with fake metrics")
                     return False  # Delete template immediately
             else:
+                # Handle all other PnL quality failures (including API errors, parsing errors, etc.)
                 tracker['zero_pnl_count'] += 1
                 logger.warning(f"⚠️ Poor PnL quality for template: {template[:50]}...")
                 logger.warning(f"   Reason: {reason}")
                 logger.warning(f"   Zero PnL count: {tracker['zero_pnl_count']}/{self.max_zero_pnl_attempts}")
                 
-                # Check if template should be deleted for other poor quality reasons
-                if tracker['zero_pnl_count'] >= self.max_zero_pnl_attempts:
-                    logger.error(f"🗑️ DELETING template due to poor PnL quality: {template[:50]}...")
-                    logger.error(f"   Total attempts: {tracker['total_attempts']}, Zero PnL: {tracker['zero_pnl_count']}")
-                    return False  # Delete template
+                # For API errors or parsing errors, be more lenient but still track failures
+                if "Failed to fetch PnL data" in reason or "Failed to parse PnL JSON" in reason:
+                    # API/parsing errors - don't immediately blacklist, but track as failure
+                    logger.warning(f"⚠️ PnL API/parsing error - will retry later: {reason}")
+                    return False  # Reject this attempt but don't blacklist template yet
+                elif "PnL data not available" in reason:
+                    # PnL data not available - reject alpha (no exceptions)
+                    logger.warning(f"⚠️ PnL data not available - rejecting alpha: {reason}")
+                    return False  # Reject alpha when PnL data is not available
+                else:
+                    # Other quality issues - use normal blacklist logic
+                    if tracker['zero_pnl_count'] >= self.max_zero_pnl_attempts:
+                        logger.error(f"🗑️ DELETING template due to poor PnL quality: {template[:50]}...")
+                        logger.error(f"   Total attempts: {tracker['total_attempts']}, Zero PnL: {tracker['zero_pnl_count']}")
+                        return False  # Delete template
         else:
             logger.info(f"✅ Good PnL quality for template: {template[:50]}...")
             logger.info(f"   {reason}")
@@ -2142,6 +2752,47 @@ Generate {num_templates} templates:"""
             stats['flatlined_rate'] = 0.0
         
         return stats
+    
+    def test_pnl_api(self, alpha_id: str) -> Dict:
+        """
+        Test the PnL API endpoint directly for debugging
+        Returns detailed information about the API response
+        """
+        try:
+            pnl_url = f'https://api.worldquantbrain.com/alphas/{alpha_id}/recordsets/pnl'
+            logger.info(f"🧪 Testing PnL API endpoint: {pnl_url}")
+            
+            response = self.sess.get(pnl_url)
+            
+            result = {
+                'url': pnl_url,
+                'status_code': response.status_code,
+                'headers': dict(response.headers),
+                'success': response.status_code == 200
+            }
+            
+            if response.status_code == 200:
+                result['raw_response'] = response.text[:500]  # First 500 chars
+                result['response_length'] = len(response.text)
+                try:
+                    data = response.json()
+                    result['data_type'] = type(data).__name__
+                    result['data_keys'] = list(data.keys()) if isinstance(data, dict) else 'Not a dict'
+                    result['records_count'] = len(data.get('records', [])) if isinstance(data, dict) else 0
+                    result['sample_record'] = data.get('records', [])[:2] if isinstance(data, dict) and data.get('records') else None
+                except Exception as json_error:
+                    result['json_error'] = str(json_error)
+            else:
+                result['error_text'] = response.text
+                
+            return result
+            
+        except Exception as e:
+            return {
+                'url': pnl_url,
+                'error': str(e),
+                'success': False
+            }
     
     def filter_blacklisted_templates(self, templates: List[Dict]) -> List[Dict]:
         """Filter out blacklisted templates from a list"""
