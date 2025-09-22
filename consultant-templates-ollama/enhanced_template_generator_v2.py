@@ -1074,7 +1074,10 @@ Reasoning for each improvement:
             logger.info(f"📊 Available templates: {len(self.top_templates)}")
             for i, template in enumerate(self.top_templates[:3]):  # Show first 3 for debugging
                 logger.info(f"   Template {i+1}: Sharpe={template.get('sharpe', 0):.3f}, Fitness={template.get('fitness', 0):.3f}, Margin={template.get('margin', 0):.3f}")
-            return None
+            
+            # FALLBACK: Generate new templates using LLM when no existing templates meet criteria
+            logger.info(f"🎯 EXPLOITATION FALLBACK: No qualifying templates found, generating new templates using LLM")
+            return self._generate_exploitation_fallback_template()
         
         logger.info(f"🎯 EXPLOITATION: {len(qualifying_templates)}/{len(self.top_templates)} templates meet high performance criteria")
         
@@ -1122,6 +1125,136 @@ Reasoning for each improvement:
             'original_margin': selected_template['margin'],
             'shuffled_fields': shuffled_fields if data_fields else []
         }
+    
+    def _generate_exploitation_fallback_template(self) -> Dict:
+        """Generate a new template using LLM when no existing templates meet exploitation criteria"""
+        # Choose a random region for template generation
+        target_region = random.choice(self.regions)
+        
+        # Get data fields for the target region
+        optimal_delay = self.select_optimal_delay(target_region)
+        data_fields = self.get_data_fields_for_region(target_region, optimal_delay)
+        
+        if not data_fields:
+            logger.warning(f"🎯 EXPLOITATION FALLBACK: No data fields found for {target_region}")
+            return None
+        
+        # Create field name list for validation
+        valid_fields = [field['id'] for field in data_fields]
+        logger.info(f"🎯 EXPLOITATION FALLBACK: Generating new template for {target_region} with {len(valid_fields)} fields")
+        
+        # Create a focused prompt for exploitation phase
+        config = self.region_configs[target_region]
+        
+        # Use all operators for maximum potential
+        selected_operators = self.operators
+        selected_fields = data_fields
+        
+        # Create operators description
+        operators_desc = []
+        for op in selected_operators:
+            operators_desc.append(f"- {op['name']}: {op['description']} (Definition: {op['definition']})")
+        
+        # Create fields description
+        fields_desc = []
+        for field in selected_fields:
+            fields_desc.append(f"- {field['id']}: {field.get('description', 'No description')}")
+        
+        # Create exploitation-focused prompt
+        prompt = f"""Generate 1 high-performance WorldQuant Brain alpha expression template for the {target_region} region.
+
+Region Configuration:
+- Region: {target_region}
+- Universe: {config.universe}
+- Delay: {optimal_delay}
+- Max Trade: {config.max_trade}
+
+EXPLOITATION PHASE REQUIREMENTS:
+- Focus on HIGH MARGIN potential (aim for >5% margin)
+- Use complex, sophisticated operator combinations
+- Leverage time series operations for better performance
+- Include ranking and normalization functions
+- Use multiple data fields for richer signals
+
+Available Operators (USE ANY COMBINATION):
+{chr(10).join(operators_desc)}
+
+Available Data Fields (USE ONLY THESE):
+{chr(10).join(fields_desc)}
+
+CRITICAL REQUIREMENTS:
+1. Use ONLY the provided operator names exactly as shown
+2. Use ONLY the provided field names exactly as shown
+3. Use proper syntax: operator(field_name, parameter) or operator(field1, field2, parameter)
+4. NO special characters like %, ==, !=, &&, ||
+5. NO missing commas between parameters
+6. Balanced parentheses
+7. NO explanations or comments
+8. NO custom operators or fields not in the lists above
+9. Field names must match EXACTLY as shown
+10. Focus on HIGH MARGIN potential - use complex combinations
+
+VALID EXAMPLES:
+ts_rank(ts_delta(close, 1), 20)
+group_normalize(ts_zscore(volume, 60), industry)
+winsorize(ts_regression(returns, volume, 120), std=3)
+
+IMPORTANT: Return your response in JSON format only. Use this exact format:
+{{"templates": ["template1"]}}
+
+Generate 1 high-performance template in JSON format:"""
+
+        # Call Ollama API
+        response = self.call_ollama_api(prompt)
+        if not response:
+            logger.error(f"🎯 EXPLOITATION FALLBACK: Failed to get response from Ollama for {target_region}")
+            return None
+        
+        # Parse and validate the JSON response
+        try:
+            response_data = json.loads(response)
+            
+            # Extract templates from JSON
+            if 'templates' in response_data:
+                template_list = response_data['templates']
+            elif isinstance(response_data, list):
+                template_list = response_data
+            else:
+                logger.error("🎯 EXPLOITATION FALLBACK: Invalid JSON format")
+                return None
+            
+            if not template_list:
+                logger.error("🎯 EXPLOITATION FALLBACK: No templates in response")
+                return None
+            
+            # Take the first template
+            template = template_list[0]
+            if isinstance(template, str) and template.strip():
+                template = template.strip()
+                
+                # Validate template
+                is_valid, error_msg = self.validate_template_syntax(template, valid_fields)
+                if is_valid:
+                    logger.info(f"🎯 EXPLOITATION FALLBACK: Generated valid template: {template[:50]}...")
+                    return {
+                        'template': template,
+                        'original_region': target_region,
+                        'target_region': target_region,
+                        'original_sharpe': 0.0,  # New template, no history
+                        'original_margin': 0.0,  # New template, no history
+                        'shuffled_fields': data_fields,
+                        'fallback_generated': True
+                    }
+                else:
+                    logger.warning(f"🎯 EXPLOITATION FALLBACK: Invalid template rejected: {template[:50]}... - {error_msg}")
+                    return None
+            else:
+                logger.error("🎯 EXPLOITATION FALLBACK: Empty template in response")
+                return None
+                
+        except json.JSONDecodeError as e:
+            logger.error(f"🎯 EXPLOITATION FALLBACK: Failed to parse JSON response: {e}")
+            return None
     
     def create_exploitation_templates(self, num_templates: int = 10) -> List[Dict]:
         """Create templates for exploitation phase with dataset substitution"""
