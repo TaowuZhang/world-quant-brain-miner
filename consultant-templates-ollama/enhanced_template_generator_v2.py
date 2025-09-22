@@ -26,6 +26,7 @@ import threading
 import sys
 import math
 import subprocess
+import ollama
 
 # Configure logging with UTF-8 encoding to handle Unicode characters
 import io
@@ -412,12 +413,12 @@ class ProgressTracker:
         sys.stdout.flush()
 
 class EnhancedTemplateGeneratorV2:
-    def __init__(self, credentials_path: str, deepseek_api_key: str, max_concurrent: int = 8, 
+    def __init__(self, credentials_path: str, ollama_model: str = "llama3.1", max_concurrent: int = 8, 
                  progress_file: str = "template_progress_v2.json", results_file: str = "enhanced_results_v2.json"):
         """Initialize the enhanced template generator with TRUE CONCURRENT subprocess execution"""
         self.sess = requests.Session()
         self.credentials_path = credentials_path
-        self.deepseek_api_key = deepseek_api_key
+        self.ollama_model = ollama_model
         self.max_concurrent = min(max_concurrent, 8)  # WorldQuant Brain limit is 8
         self.progress_file = progress_file
         self.results_file = results_file
@@ -765,8 +766,8 @@ Reasoning for each improvement:
 2. [Why this version should perform better]
 3. [Why this version should perform better]"""
 
-        # Call DeepSeek API for optimization
-        response = self.call_deepseek_api(optimization_prompt)
+        # Call Ollama API for optimization
+        response = self.call_ollama_api(optimization_prompt)
         if not response:
             logger.error(f"Failed to get optimization suggestions for iteration {iteration}")
             return optimization_item
@@ -1368,54 +1369,58 @@ Reasoning for each improvement:
         except Exception as e:
             return False, f"Validation error: {str(e)}"
     
-    def call_deepseek_api(self, prompt: str, max_retries: int = 3) -> Optional[str]:
-        """Call DeepSeek API to generate templates"""
-        headers = {
-            'Authorization': f'Bearer {self.deepseek_api_key}',
-            'Content-Type': 'application/json'
-        }
-        
-        payload = {
-            "model": "deepseek-chat",
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You are an expert in quantitative finance and WorldQuant Brain alpha expressions. Generate valid, creative alpha expression templates with proper syntax."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            "temperature": 0.7,
-            "max_tokens": 2000,
-            "top_p": 0.9
-        }
+    def call_ollama_api(self, prompt: str, max_retries: int = 3) -> Optional[str]:
+        """Call Ollama API to generate templates in JSON format"""
+        system_prompt = """You are an expert in quantitative finance and WorldQuant Brain alpha expressions. 
+        Generate valid, creative alpha expression templates with proper syntax.
+        ALWAYS respond with valid JSON format. Return only the JSON response, no additional text or reasoning.
+        Example format: {"templates": ["template1", "template2", "template3"]}"""
         
         for attempt in range(max_retries):
             try:
-                logger.info(f"DeepSeek API call attempt {attempt + 1}/{max_retries}")
-                response = requests.post(
-                    'https://api.deepseek.com/v1/chat/completions',
-                    headers=headers,
-                    json=payload,
-                    timeout=60
+                logger.info(f"Ollama API call attempt {attempt + 1}/{max_retries}")
+                
+                response = ollama.chat(
+                    model=self.ollama_model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": system_prompt
+                        },
+                        {
+                            "role": "user", 
+                            "content": prompt
+                        }
+                    ],
+                    options={
+                        "temperature": 0.7,
+                        "top_p": 0.9,
+                        "num_predict": 2000
+                    }
                 )
                 
-                if response.status_code == 200:
-                    result = response.json()
-                    content = result['choices'][0]['message']['content']
-                    logger.info("DeepSeek API call successful")
+                content = response['message']['content']
+                logger.info("Ollama API call successful")
+                
+                # Try to parse as JSON to ensure it's valid
+                try:
+                    json.loads(content)
                     return content
-                else:
-                    logger.warning(f"DeepSeek API error: {response.status_code} - {response.text}")
-                    if attempt < max_retries - 1:
-                        time.sleep(2 ** attempt)
-                        continue
-                    return None
+                except json.JSONDecodeError:
+                    logger.warning("Ollama response is not valid JSON, attempting to extract JSON")
+                    # Try to extract JSON from the response
+                    json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                    if json_match:
+                        return json_match.group(0)
+                    else:
+                        logger.error("No valid JSON found in Ollama response")
+                        if attempt < max_retries - 1:
+                            time.sleep(2 ** attempt)
+                            continue
+                        return None
                     
             except Exception as e:
-                logger.error(f"DeepSeek API call failed: {e}")
+                logger.error(f"Ollama API call failed: {e}")
                 if attempt < max_retries - 1:
                     time.sleep(2 ** attempt)
                     continue
@@ -1582,25 +1587,35 @@ ts_rank(ts_delta(close, 1), 20)
 group_normalize(ts_zscore(volume, 60), industry)
 winsorize(ts_regression(returns, volume, 120), std=3)
 
-Generate {num_templates} templates:"""
+IMPORTANT: Return your response in JSON format only. Use this exact format:
+{{"templates": ["template1", "template2", "template3"]}}
 
-        # Call DeepSeek API
-        response = self.call_deepseek_api(prompt)
+Generate {num_templates} templates in JSON format:"""
+
+        # Call Ollama API
+        response = self.call_ollama_api(prompt)
         if not response:
-            logger.error(f"Failed to get response from DeepSeek for region {region}")
+            logger.error(f"Failed to get response from Ollama for region {region}")
             return []
         
-        # Parse and validate the response
+        # Parse and validate the JSON response
         templates = []
-        lines = response.strip().split('\n')
-        
-        for line in lines:
-            line = line.strip()
-            if line and not line.startswith('#') and not line.startswith('//'):
-                # Clean up the template
-                template = re.sub(r'^\d+\.\s*', '', line)  # Remove numbering
-                template = template.strip()
-                if template:
+        try:
+            # Parse JSON response
+            response_data = json.loads(response)
+            
+            # Extract templates from JSON
+            if 'templates' in response_data:
+                template_list = response_data['templates']
+            elif isinstance(response_data, list):
+                template_list = response_data
+            else:
+                logger.error("Invalid JSON format: expected 'templates' key or array")
+                return []
+            
+            for template in template_list:
+                if isinstance(template, str) and template.strip():
+                    template = template.strip()
                     # Validate template
                     is_valid, error_msg = self.validate_template_syntax(template, valid_fields)
                     if is_valid:
@@ -1614,6 +1629,31 @@ Generate {num_templates} templates:"""
                         logger.info(f"Valid template: {template[:50]}... (fields: {fields_used})")
                     else:
                         logger.warning(f"Invalid template rejected: {template[:50]}... - {error_msg}")
+                        
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON response: {e}")
+            # Fallback to line-by-line parsing if JSON parsing fails
+            lines = response.strip().split('\n')
+            for line in lines:
+                line = line.strip()
+                if line and not line.startswith('#') and not line.startswith('//'):
+                    # Clean up the template
+                    template = re.sub(r'^\d+\.\s*', '', line)  # Remove numbering
+                    template = template.strip()
+                    if template:
+                        # Validate template
+                        is_valid, error_msg = self.validate_template_syntax(template, valid_fields)
+                        if is_valid:
+                            fields_used = self.extract_fields_from_template(template, data_fields)
+                            templates.append({
+                                'region': region,
+                                'template': template,
+                                'operators_used': self.extract_operators_from_template(template),
+                                'fields_used': fields_used
+                            })
+                            logger.info(f"Valid template: {template[:50]}... (fields: {fields_used})")
+                        else:
+                            logger.warning(f"Invalid template rejected: {template[:50]}... - {error_msg}")
         
         logger.info(f"Generated {len(templates)} valid templates for region {region}")
         
@@ -4032,7 +4072,7 @@ Generate {num_templates} templates:"""
 def main():
     parser = argparse.ArgumentParser(description='Enhanced template generator v2 with TRUE CONCURRENT subprocess execution')
     parser.add_argument('--credentials', default='credential.txt', help='Path to credentials file')
-    parser.add_argument('--deepseek-key', required=True, help='DeepSeek API key')
+    parser.add_argument('--ollama-model', default='llama3.1', help='Ollama model to use (default: llama3.1)')
     parser.add_argument('--output', default='enhanced_results_v2.json', help='Output filename')
     parser.add_argument('--progress-file', default='template_progress_v2.json', help='Progress file')
     parser.add_argument('--regions', nargs='+', help='Regions to process (default: all)')
@@ -4046,7 +4086,7 @@ def main():
         # Initialize generator
         generator = EnhancedTemplateGeneratorV2(
             args.credentials, 
-            args.deepseek_key, 
+            args.ollama_model, 
             args.max_concurrent,
             args.progress_file,
             args.output
