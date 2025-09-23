@@ -425,6 +425,11 @@ class EnhancedTemplateGeneratorV2:
         self.progress_tracker = ProgressTracker()
         self.bandit = MultiArmBandit(exploration_rate=0.3, decay_rate=0.001, decay_interval=100)
         
+        # Operator usage tracking and blacklist
+        self.operator_usage_count = {}
+        self.operator_blacklist = set()  # Temporarily blacklisted operators
+        self.blacklist_threshold = 5  # Blacklist after 5 uses in recent templates
+        
         # TRUE CONCURRENT execution using ThreadPoolExecutor
         self.executor = ThreadPoolExecutor(max_workers=self.max_concurrent)
         self.active_futures = {}  # Track active Future objects
@@ -479,6 +484,9 @@ class EnhancedTemplateGeneratorV2:
         # Load operators and data fields
         self.operators = self.load_operators()
         self.data_fields = {}
+        
+        # Operator usage tracking for diversity
+        self.operator_usage_count = {}  # Track how often each operator is used
         
         # Error learning system - store failure patterns per region
         self.failure_patterns = {}  # {region: [{'template': str, 'error': str, 'timestamp': float}]}
@@ -999,8 +1007,9 @@ Reasoning for each improvement:
             logger.info(f"🔄 PHASE SWITCH: Switching back to explore/exploit mode after {self.total_simulations} total simulations")
             logger.info(f"🔄 LOOP PHASE: Loop #{self.loop_count} - Resuming normal explore/exploit with new discoveries")
             
-            # Reset for new loop
+            # Reset for new loop and update thresholds for next cycle
             self._reset_for_new_loop()
+            self._update_thresholds_for_next_cycle()
     
     def _reset_for_new_loop(self):
         """Reset system for new explore/exploit loop"""
@@ -1011,10 +1020,19 @@ Reasoning for each improvement:
         # Clear old top templates to allow new discoveries
         self.top_templates = []
         self.exploitation_bandit = None
+    
+    def _update_thresholds_for_next_cycle(self):
+        """Update thresholds for the next cycle to ensure infinite operation"""
+        # Update thresholds based on current simulation count
+        current_count = self.total_simulations
         
-        # Reset simulation count for new loop
-        self.total_simulations = 0
+        # Set next phase switch threshold to be 100 simulations from current point
+        self.phase_switch_threshold = current_count + 100
         
+        # Set next exploitation end threshold to be 200 simulations after phase switch
+        self.exploitation_end_threshold = self.phase_switch_threshold + 200
+        
+        logger.info(f"🔄 THRESHOLDS UPDATED: Next phase switch at {self.phase_switch_threshold}, exploitation end at {self.exploitation_end_threshold}")
         logger.info(f"🔄 LOOP RESET: Starting new explore/exploit cycle (Loop #{self.loop_count})")
         logger.info(f"📊 New cycle will run: 0-100 explore/exploit, 100-300 exploit, then loop again")
     
@@ -1146,8 +1164,9 @@ Reasoning for each improvement:
         # Create a focused prompt for exploitation phase
         config = self.region_configs[target_region]
         
-        # Use all operators for maximum potential
-        selected_operators = self.operators
+        # Use underused operators for diversity even in exploitation fallback
+        max_operators = min(8, len(self.operators))  # Limit to 8 for focus
+        selected_operators = self.get_underused_operators(max_operators)
         selected_fields = data_fields
         
         # Create operators description
@@ -1155,10 +1174,13 @@ Reasoning for each improvement:
         for op in selected_operators:
             operators_desc.append(f"- {op['name']}: {op['description']} (Definition: {op['definition']})")
         
-        # Create fields description
-        fields_desc = []
-        for field in selected_fields:
-            fields_desc.append(f"- {field['id']}: {field.get('description', 'No description')}")
+        # Use field placeholders instead of actual field names
+        fields_desc = [
+            "- DATA_FIELD1: First data field (use this for single-field operators)",
+            "- DATA_FIELD2: Second data field (use this for two-field operators like add, subtract, multiply, divide, ts_corr, ts_regression)",
+            "- DATA_FIELD3: Third data field (use this for additional combinations)",
+            "- DATA_FIELD4: Fourth data field (use this for complex multi-field operations)"
+        ]
         
         # Create exploitation-focused prompt
         prompt = f"""Generate 1 high-performance WorldQuant Brain alpha expression template for the {target_region} region.
@@ -1182,22 +1204,24 @@ Available Operators (USE ANY COMBINATION):
 Available Data Fields (USE ONLY THESE):
 {chr(10).join(fields_desc)}
 
+🎯 OPERATOR CONSTRAINT - USE ONLY THESE SELECTED OPERATORS:
+You MUST use ONLY the following operators: {', '.join([op['name'] for op in selected_operators])}
+Description: {chr(10).join([op['description'] for op in selected_operators])}
+Do NOT use any operators not in this list. This is to encourage diversity and prevent overusing certain operators.
+Each template should use at least one of these selected operators.
+
 CRITICAL REQUIREMENTS:
 1. Use ONLY the provided operator names exactly as shown
 2. Use ONLY the provided field names exactly as shown
 3. Use proper syntax: operator(field_name, parameter) or operator(field1, field2, parameter)
-4. NO special characters like %, ==, !=, &&, ||
+4. NO special characters like %, ==, !=, &&, ||, >, <, >=, <=
 5. NO missing commas between parameters
 6. Balanced parentheses
 7. NO explanations or comments
 8. NO custom operators or fields not in the lists above
 9. Field names must match EXACTLY as shown
 10. Focus on HIGH MARGIN potential - use complex combinations
-
-VALID EXAMPLES:
-ts_rank(ts_delta(close, 1), 20)
-group_normalize(ts_zscore(volume, 60), industry)
-winsorize(ts_regression(returns, volume, 120), std=3)
+11. mdl307_sales_pct_eu_7 > mdl307_cusip_3, filter=true is NOT a valid template, refrain from using comparison operators like >, <, >=, <= in the templates
 
 IMPORTANT: Return your response in JSON format only. Use this exact format:
 {{"templates": ["template1"]}}
@@ -1231,6 +1255,16 @@ Generate 1 high-performance template in JSON format:"""
             template = template_list[0]
             if isinstance(template, str) and template.strip():
                 template = template.strip()
+                
+                # IMMEDIATE FAIL for comparison operators - don't even process further
+                comparison_ops = ['>', '<', '>=', '<=', '==', '!=', '&&', '||', '%']
+                for op in comparison_ops:
+                    if op in template:
+                        logger.warning(f"🚫 EXPLOITATION FALLBACK IMMEDIATE FAIL: Template contains forbidden comparison operator '{op}': {template}")
+                        return None
+                
+                # Replace field placeholders with actual field names
+                template = self.replace_field_placeholders(template, data_fields)
                 
                 # Validate template
                 is_valid, error_msg = self.validate_template_syntax(template, valid_fields)
@@ -1439,11 +1473,11 @@ Generate 1 high-performance template in JSON format:"""
     def validate_template_syntax(self, template: str, valid_fields: List[str]) -> Tuple[bool, str]:
         """Validate template syntax and field usage - more lenient approach"""
         try:
-            # Check for invalid operators that cause syntax errors
-            invalid_ops = ['%', '==', '!=', '&&', '||']
-            for op in invalid_ops:
+            # Check for comparison operators that are invalid in alpha expressions
+            comparison_ops = ['>', '<', '>=', '<=', '==', '!=', '&&', '||', '%']
+            for op in comparison_ops:
                 if op in template:
-                    return False, f"Invalid operator: {op}"
+                    return False, f"Invalid comparison operator: {op}"
             
             # Check for balanced parentheses
             if template.count('(') != template.count(')'):
@@ -1503,11 +1537,41 @@ Generate 1 high-performance template in JSON format:"""
             return False, f"Validation error: {str(e)}"
     
     def call_ollama_api(self, prompt: str, max_retries: int = 3) -> Optional[str]:
-        """Call Ollama API to generate templates in JSON format"""
+        """Call Ollama API to generate templates using structured outputs"""
         system_prompt = """You are an expert in quantitative finance and WorldQuant Brain alpha expressions. 
         Generate valid, creative alpha expression templates with proper syntax.
-        ALWAYS respond with valid JSON format. Return only the JSON response, no additional text or reasoning.
-        Example format: {"templates": ["template1", "template2", "template3"]}"""
+        
+        CRITICAL RULES:
+        1. Use ONLY the operators provided in the prompt - do NOT invent new operators
+        2. Use ONLY the data fields provided in the prompt
+        3. Use proper function syntax: operator(field1, field2, parameter) or operator(field, parameter)
+        4. NO template placeholders or generic field names
+        5. NO SQL queries or database syntax
+        6. NO comparison operators like >, <, >=, <=, ==, !=, &&, ||, %
+        8. Use actual operator names and field names exactly as provided
+        9. NEVER use placeholders like DATA_FIELD1, DATA_FIELD2, OPERATOR, etc.
+        10. Examples of INVALID templates: "field1 > field2", "field1 < field2", "field1 >= field2", "field1 <= field2", "field1 == field2", "field1 != field2", "field1 && field2", "field1 || field2", "field1 % field2", "field1, filter=true"
+
+        The response will be automatically formatted as JSON with a 'templates' array.
+        Focus on generating high-quality alpha expressions that follow the provided rules."""
+        
+        # Define JSON schema for structured outputs
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "templates": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "description": "A valid WorldQuant Brain alpha expression template"
+                    },
+                    "minItems": 1,
+                    "maxItems": 20
+                }
+            },
+            "required": ["templates"],
+            "additionalProperties": False
+        }
         
         for attempt in range(max_retries):
             try:
@@ -1525,8 +1589,9 @@ Generate 1 high-performance template in JSON format:"""
                             "content": prompt
                         }
                     ],
+                    format=json_schema,  # Use structured outputs
                     options={
-                        "temperature": 0.7,
+                        "temperature": 0,  # Set to 0 for more deterministic output with structured outputs
                         "top_p": 0.9,
                         "num_predict": 2000
                     }
@@ -1535,22 +1600,24 @@ Generate 1 high-performance template in JSON format:"""
                 content = response['message']['content']
                 logger.info("Ollama API call successful")
                 
-                # Try to parse as JSON to ensure it's valid
+                # Parse and validate structured output
                 try:
-                    json.loads(content)
-                    return content
-                except json.JSONDecodeError:
-                    logger.warning("Ollama response is not valid JSON, attempting to extract JSON")
-                    # Try to extract JSON from the response
-                    json_match = re.search(r'\{.*\}', content, re.DOTALL)
-                    if json_match:
-                        return json_match.group(0)
+                    parsed_json = json.loads(content)
+                    if 'templates' in parsed_json and isinstance(parsed_json['templates'], list):
+                        logger.info(f"✅ Structured output validation successful: {len(parsed_json['templates'])} templates")
+                        return content
                     else:
-                        logger.error("No valid JSON found in Ollama response")
+                        logger.error("Invalid structured output: missing 'templates' key or not a list")
                         if attempt < max_retries - 1:
                             time.sleep(2 ** attempt)
                             continue
                         return None
+                except json.JSONDecodeError as e:
+                    logger.error(f"Structured output failed JSON validation: {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(2 ** attempt)
+                        continue
+                    return None
                     
             except Exception as e:
                 logger.error(f"Ollama API call failed: {e}")
@@ -1629,8 +1696,9 @@ Generate 1 high-performance template in JSON format:"""
                 logger.info(f"UNLIMITED operators: Using ALL {len(selected_operators)} operators for template generation")
             else:
                 max_operators = random.randint(1, 6)
-                selected_operators = random.sample(self.operators, min(max_operators, len(self.operators)))
-                logger.info(f"LIMITED operators: Selected {len(selected_operators)} operators (max: {max_operators}) for template generation")
+                # Use underused operators to force diversity
+                selected_operators = self.get_underused_operators(max_operators)
+                logger.info(f"UNDERUSED operators: Selected {len(selected_operators)} underused operators (max: {max_operators}) for template generation")
             
             # Shuffle data fields to explore different combinations
             selected_fields = random.sample(data_fields, len(data_fields))  # Shuffle all fields
@@ -1641,9 +1709,13 @@ Generate 1 high-performance template in JSON format:"""
         for op in selected_operators:
             operators_desc.append(f"- {op['name']}: {op['description']} (Definition: {op['definition']})")
         
-        fields_desc = []
-        for field in selected_fields:
-            fields_desc.append(f"- {field['id']}: {field.get('description', 'No description')}")
+        # Use field placeholders instead of actual field names
+        fields_desc = [
+            "- DATA_FIELD1: First data field (use this for single-field operators)",
+            "- DATA_FIELD2: Second data field (use this for two-field operators like add, subtract, multiply, divide, ts_corr, ts_regression)",
+            "- DATA_FIELD3: Third data field (use this for additional combinations)",
+            "- DATA_FIELD4: Fourth data field (use this for complex multi-field operations)"
+        ]
         
         # Add parameter guidelines based on operator definitions
         parameter_guidelines = []
@@ -1695,6 +1767,18 @@ Region Configuration:
 {field_instruction}
 {chr(10).join(fields_desc)}{failure_guidance}
 
+🎯 OPERATOR CONSTRAINT - USE ONLY THESE SELECTED OPERATORS:
+You MUST use ONLY the following operators: {', '.join([op['name'] for op in selected_operators])}
+Description: {chr(10).join([op['description'] for op in selected_operators])}
+Do NOT use any operators not in this list. This is to encourage diversity and prevent overusing certain operators.
+Each template should use at least one of these selected operators.
+
+🎯 FIELD PLACEHOLDERS - USE THESE EXACT PLACEHOLDERS:
+- Use DATA_FIELD1 for single-field operators
+- Use DATA_FIELD2 for two-field operators
+- Use DATA_FIELD3 and DATA_FIELD4 for complex multi-field operations
+- DO NOT use actual field names - use these placeholders exactly as shown
+
 PARAMETER GUIDELINES:
 {chr(10).join(parameter_guidelines) if parameter_guidelines else "- All parameters should be positive integers or valid numbers"}
 
@@ -1703,22 +1787,30 @@ CRITICAL REQUIREMENTS:
 2. Use ONLY the provided field names exactly as shown (these are verified for delay={optimal_delay})
 3. Use proper syntax: operator(field_name, parameter) or operator(field1, field2, parameter)
 4. Follow parameter guidelines above - NO decimal parameters like 4.0, 0.5 unless specifically allowed
-5. NO special characters like %, ==, !=, &&, ||
-6. NO missing commas between parameters
-7. Balanced parentheses
-8. Each template on a separate line
-9. NO explanations or comments
-10. NO custom operators or fields not in the lists above
-11. Field names must match EXACTLY as shown in the Available Data Fields list
-12. Read operator definitions carefully to understand parameter requirements
-13. AVOID the failure patterns shown above - learn from previous mistakes
-14. Double-check parameter counts and types for each operator
+5. ABSOLUTELY NO comparison operators: >, <, >=, <=, ==, !=, &&, ||, %
+7. NO missing commas between parameters
+8. Balanced parentheses
+9. Each template on a separate line
+10. NO explanations or comments
+11. NO custom operators or fields not in the lists above
+12. Field names must match EXACTLY as shown in the Available Data Fields list
+13. Read operator definitions carefully to understand parameter requirements
+14. AVOID the failure patterns shown above - learn from previous mistakes
+15. Double-check parameter counts and types for each operator
 {requirement_15}
 
-VALID EXAMPLES:
-ts_rank(ts_delta(close, 1), 20)
-group_normalize(ts_zscore(volume, 60), industry)
-winsorize(ts_regression(returns, volume, 120), std=3)
+🚫 FORBIDDEN PATTERNS (DO NOT USE):
+- field1 > field2 ❌
+- field1 < field2 ❌  
+- field1 >= field2 ❌
+- field1 <= field2 ❌
+- field1 == field2 ❌
+- field1 != field2 ❌
+- field1 && field2 ❌
+- field1 || field2 ❌
+- field1 % field2 ❌
+
+
 
 IMPORTANT: Return your response in JSON format only. Use this exact format:
 {{"templates": ["template1", "template2", "template3"]}}
@@ -1749,6 +1841,17 @@ Generate {num_templates} templates in JSON format:"""
             for template in template_list:
                 if isinstance(template, str) and template.strip():
                     template = template.strip()
+                    
+                    # IMMEDIATE FAIL for comparison operators - don't even process further
+                    comparison_ops = ['>', '<', '>=', '<=', '==', '!=', '&&', '||', '%']
+                    for op in comparison_ops:
+                        if op in template:
+                            logger.warning(f"🚫 IMMEDIATE FAIL: Template contains forbidden comparison operator '{op}': {template}")
+                            continue
+                    
+                    # Replace field placeholders with actual field names
+                    template = self.replace_field_placeholders(template, data_fields)
+                    
                     # Validate template
                     is_valid, error_msg = self.validate_template_syntax(template, valid_fields)
                     if is_valid:
@@ -1774,6 +1877,9 @@ Generate {num_templates} templates in JSON format:"""
                     template = re.sub(r'^\d+\.\s*', '', line)  # Remove numbering
                     template = template.strip()
                     if template:
+                        # Replace field placeholders with actual field names
+                        template = self.replace_field_placeholders(template, data_fields)
+                        
                         # Validate template
                         is_valid, error_msg = self.validate_template_syntax(template, valid_fields)
                         if is_valid:
@@ -1887,6 +1993,117 @@ Generate {num_templates} templates in JSON format:"""
                 operators_found.append(op['name'])
         return operators_found
     
+    def track_operator_usage(self, template: str):
+        """Track which operators are used in successful templates and manage blacklist"""
+        operators_used = self.extract_operators_from_template(template)
+        for op in operators_used:
+            self.operator_usage_count[op] = self.operator_usage_count.get(op, 0) + 1
+            
+            # Check if operator should be blacklisted
+            if self.operator_usage_count[op] >= self.blacklist_threshold:
+                if op not in self.operator_blacklist:
+                    self.operator_blacklist.add(op)
+                    logger.warning(f"🚫 BLACKLISTED: Operator '{op}' has been used {self.operator_usage_count[op]} times - temporarily blacklisted")
+        
+        # Periodically clear blacklist to allow re-exploration
+        if len(self.operator_blacklist) > 3:
+            # Clear oldest blacklisted operators
+            operators_to_clear = list(self.operator_blacklist)[:2]  # Clear 2 oldest
+            for op in operators_to_clear:
+                self.operator_blacklist.remove(op)
+                logger.info(f"🔄 UNBLACKLISTED: Operator '{op}' removed from blacklist for re-exploration")
+        
+        logger.info(f"📊 Operator usage updated: {operators_used} | Blacklisted: {list(self.operator_blacklist)}")
+    
+    def get_diverse_operators(self) -> List[Dict]:
+        """Get a diverse set of operators, prioritizing underused and two-field operators"""
+        import random
+        
+        # Categorize operators by type and usage
+        arithmetic_ops = []
+        time_series_ops = []
+        ranking_ops = []
+        normalization_ops = []
+        two_field_ops = []
+        
+        for op in self.operators:
+            op_name = op['name'].lower()
+            op_def = op['definition'].lower()
+            
+            # Check if it's a two-field operator
+            if 'x, y' in op_def or op_name in ['add', 'subtract', 'multiply', 'divide', 'ts_corr', 'ts_regression']:
+                two_field_ops.append(op)
+            elif 'ts_' in op_name:
+                time_series_ops.append(op)
+            elif any(rank_word in op_name for rank_word in ['rank', 'percentile', 'quantile']):
+                ranking_ops.append(op)
+            elif any(norm_word in op_name for norm_word in ['normalize', 'zscore', 'standardize']):
+                normalization_ops.append(op)
+            else:
+                arithmetic_ops.append(op)
+        
+        # Select diverse operators, prioritizing underused ones
+        diverse_operators = []
+        
+        # First, add two-field operators (up to 10)
+        if two_field_ops:
+            two_field_sorted = sorted(two_field_ops, key=lambda x: self.operator_usage_count.get(x['name'], 0))
+            diverse_operators.extend(two_field_sorted[:min(10, len(two_field_sorted))])
+        
+        # Then add from other categories (up to 3 each)
+        for category in [arithmetic_ops, time_series_ops, ranking_ops, normalization_ops]:
+            if category:
+                category_sorted = sorted(category, key=lambda x: self.operator_usage_count.get(x['name'], 0))
+                diverse_operators.extend(category_sorted[:min(3, len(category_sorted))])
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        final_operators = []
+        for op in diverse_operators:
+            if op['name'] not in seen:
+                seen.add(op['name'])
+                final_operators.append(op)
+        
+        # Ensure we have at least 6 operators
+        if len(final_operators) < 6:
+            remaining_ops = [op for op in self.operators if op['name'] not in seen]
+            final_operators.extend(remaining_ops[:6 - len(final_operators)])
+        
+        return final_operators
+    
+    def get_underused_operators(self, max_operators: int = 8) -> List[Dict]:
+        """Get a random group of underused operators to force diversity, excluding blacklisted operators"""
+        # Filter out blacklisted operators
+        available_operators = [op for op in self.operators if op['name'] not in self.operator_blacklist]
+        
+        if not available_operators:
+            logger.warning("🚫 All operators are blacklisted! Clearing blacklist and using all operators")
+            self.operator_blacklist.clear()
+            available_operators = self.operators
+        
+        if not self.operator_usage_count:
+            # If no usage data, return diverse operators from available ones
+            return self.get_diverse_operators()[:max_operators]
+        
+        # Sort available operators by usage count (ascending = least used first)
+        sorted_operators = sorted(available_operators, key=lambda x: self.operator_usage_count.get(x['name'], 0))
+        
+        # Get the least used operators (top 50% least used)
+        half_point = len(sorted_operators) // 2
+        underused_pool = sorted_operators[:half_point]
+        
+        # Randomly select from underused operators
+        import random
+        selected_operators = random.sample(underused_pool, min(max_operators, len(underused_pool)))
+        
+        # Log the selection
+        operator_names = [op['name'] for op in selected_operators]
+        usage_counts = [self.operator_usage_count.get(op['name'], 0) for op in selected_operators]
+        logger.info(f"🎯 UNDERUSED OPERATORS SELECTED (excluding blacklisted): {operator_names} (usage counts: {usage_counts})")
+        logger.info(f"🚫 Blacklisted operators: {list(self.operator_blacklist)}")
+        
+        return selected_operators
+    
     def extract_fields_from_template(self, template: str, data_fields: List[Dict]) -> List[str]:
         """Extract field names from a template"""
         fields_found = []
@@ -1894,6 +2111,29 @@ Generate {num_templates} templates in JSON format:"""
             if field['id'] in template:
                 fields_found.append(field['id'])
         return fields_found
+    
+    def replace_field_placeholders(self, template: str, data_fields: List[Dict]) -> str:
+        """Replace DATA_FIELD placeholders with actual field names"""
+        import random
+        
+        # Shuffle fields to get random selection
+        shuffled_fields = random.sample(data_fields, len(data_fields))
+        
+        # Create mapping for placeholders
+        field_mapping = {
+            'DATA_FIELD1': shuffled_fields[0]['id'] if len(shuffled_fields) > 0 else 'close',
+            'DATA_FIELD2': shuffled_fields[1]['id'] if len(shuffled_fields) > 1 else shuffled_fields[0]['id'],
+            'DATA_FIELD3': shuffled_fields[2]['id'] if len(shuffled_fields) > 2 else shuffled_fields[1]['id'],
+            'DATA_FIELD4': shuffled_fields[3]['id'] if len(shuffled_fields) > 3 else shuffled_fields[2]['id']
+        }
+        
+        # Replace placeholders with actual field names
+        result = template
+        for placeholder, actual_field in field_mapping.items():
+            result = result.replace(placeholder, actual_field)
+        
+        logger.info(f"🔄 FIELD REPLACEMENT: {template[:50]}... -> {result[:50]}...")
+        return result
     
     def save_progress(self):
         """Save current progress to file"""
@@ -2176,6 +2416,8 @@ Generate {num_templates} templates in JSON format:"""
                             
                             # Check if this alpha qualifies for optimization
                             if is_truly_successful:
+                                # Track operator usage for diversity
+                                self.track_operator_usage(template_data['template'])
                                 self.add_to_optimization_queue(result)
                                 logger.info(f"✅ Template simulation completed successfully: {template_data['template'][:50]}...")
                                 logger.info(f"📊 Alpha {alpha_id} Performance: Sharpe={sharpe}, Fitness={fitness}, Turnover={turnover}, Returns={returns}")
@@ -3537,43 +3779,43 @@ Generate {num_templates} templates in JSON format:"""
                                 if (sharpe > 1.25 and fitness > 1.0 and margin > 0.05):
                                     elite_templates.append(template)
                             
-                        if elite_templates:
-                            logger.info(f"🎯 EXPLOIT: {len(elite_templates)}/{len(successful_templates)} templates meet elite criteria")
-                            
-                            # Use weighted selection among elite templates
-                            performance_weights = []
-                            for template in elite_templates:
-                                # Use Sharpe ratio as the weight (higher Sharpe = higher weight)
-                                weight = max(template.get('sharpe', 0), 0.1)  # Minimum weight of 0.1
-                                performance_weights.append(weight)
-                            
-                            # Weighted random selection
-                            total_weight = sum(performance_weights)
-                            probabilities = [w / total_weight for w in performance_weights]
-                            selected_idx = random.choices(range(len(elite_templates)), weights=probabilities)[0]
-                            best_template = elite_templates[selected_idx]
-                            
-                            logger.info(f"🎯 EXPLOIT: Using elite template with Sharpe={best_template.get('sharpe', 0):.3f}, Fitness={best_template.get('fitness', 0):.3f}, Margin={best_template.get('margin', 0):.3f} (weight={probabilities[selected_idx]:.3f})")
-                            
-                            future = self.executor.submit(self._exploit_and_simulate_concurrent, best_template)
-                            future_id = f"exploit_{int(time.time() * 1000)}"
-                            self.active_futures[future_id] = future
-                            self.future_start_times[future_id] = time.time()
-                            logger.info(f"🚀 Started CONCURRENT EXPLOIT task: {future_id}")
-                        else:
-                            # No elite templates available, fallback to EXPLORE mode
-                            logger.warning(f"🎯 EXPLOIT: No elite templates found, falling back to EXPLORE mode")
-                            logger.info(f"📊 Available templates: {len(successful_templates)}")
-                            for i, template in enumerate(successful_templates[:3]):  # Show first 3 for debugging
-                                logger.info(f"   Template {i+1}: Sharpe={template.get('sharpe', 0):.3f}, Fitness={template.get('fitness', 0):.3f}, Margin={template.get('margin', 0):.3f}")
-                            
-                            # Fallback to explore mode instead of using mediocre templates
-                            logger.info(f"🔄 FALLBACK: Switching to EXPLORE mode due to no elite templates")
-                            future = self.executor.submit(self._explore_and_simulate_concurrent)
-                            future_id = f"explore_{int(time.time() * 1000)}"
-                            self.active_futures[future_id] = future
-                            self.future_start_times[future_id] = time.time()
-                            logger.info(f"🚀 Started CONCURRENT EXPLORE task: {future_id}")
+                            if elite_templates:
+                                logger.info(f"🎯 EXPLOIT: {len(elite_templates)}/{len(successful_templates)} templates meet elite criteria")
+                                
+                                # Use weighted selection among elite templates
+                                performance_weights = []
+                                for template in elite_templates:
+                                    # Use Sharpe ratio as the weight (higher Sharpe = higher weight)
+                                    weight = max(template.get('sharpe', 0), 0.1)  # Minimum weight of 0.1
+                                    performance_weights.append(weight)
+                                
+                                # Weighted random selection
+                                total_weight = sum(performance_weights)
+                                probabilities = [w / total_weight for w in performance_weights]
+                                selected_idx = random.choices(range(len(elite_templates)), weights=probabilities)[0]
+                                best_template = elite_templates[selected_idx]
+                                
+                                logger.info(f"🎯 EXPLOIT: Using elite template with Sharpe={best_template.get('sharpe', 0):.3f}, Fitness={best_template.get('fitness', 0):.3f}, Margin={best_template.get('margin', 0):.3f} (weight={probabilities[selected_idx]:.3f})")
+                                
+                                future = self.executor.submit(self._exploit_and_simulate_concurrent, best_template)
+                                future_id = f"exploit_{int(time.time() * 1000)}"
+                                self.active_futures[future_id] = future
+                                self.future_start_times[future_id] = time.time()
+                                logger.info(f"🚀 Started CONCURRENT EXPLOIT task: {future_id}")
+                            else:
+                                # No elite templates available, fallback to EXPLORE mode
+                                logger.warning(f"🎯 EXPLOIT: No elite templates found, falling back to EXPLORE mode")
+                                logger.info(f"📊 Available templates: {len(successful_templates)}")
+                                for i, template in enumerate(successful_templates[:3]):  # Show first 3 for debugging
+                                    logger.info(f"   Template {i+1}: Sharpe={template.get('sharpe', 0):.3f}, Fitness={template.get('fitness', 0):.3f}, Margin={template.get('margin', 0):.3f}")
+                                
+                                # Fallback to explore mode instead of using mediocre templates
+                                logger.info(f"🔄 FALLBACK: Switching to EXPLORE mode due to no elite templates")
+                                future = self.executor.submit(self._explore_and_simulate_concurrent)
+                                future_id = f"explore_{int(time.time() * 1000)}"
+                                self.active_futures[future_id] = future
+                                self.future_start_times[future_id] = time.time()
+                                logger.info(f"🚀 Started CONCURRENT EXPLORE task: {future_id}")
                     else:
                         # No successful templates yet, fallback to explore
                         logger.info(f"🎯 EXPLOIT: No successful templates found, falling back to EXPLORE")
@@ -3893,6 +4135,10 @@ Generate {num_templates} templates in JSON format:"""
                         logger.info(f"Alpha {alpha_id} positions: Long={longCount}, Short={shortCount}")
                         logger.info(f"Alpha {alpha_id} PnL quality: {pnl_quality_ok}")
                         logger.info(f"Alpha {alpha_id} success: {is_truly_successful}")
+                        
+                        # Track operator usage for diversity if successful
+                        if is_truly_successful:
+                            self.track_operator_usage(template['template'])
                         
                         return TemplateResult(
                             template=template['template'],
