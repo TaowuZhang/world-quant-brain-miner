@@ -9,11 +9,12 @@ from bruteforce_template_generator import BruteforceTemplateGenerator
 
 def main():
     # Default configuration
-    credentials_file = "credentials.json"
+    credentials_file = "credential.json"  # Changed to match actual file
     ollama_model = "llama3.1"
     max_concurrent = 8
     max_batches = 3  # 3 batches of 4 templates each = 12 templates total
     progress_file = "bruteforce_progress.json"
+    custom_template_file = "custom_templates.json"  # Set to None to use AI generation, or "custom_templates.json" for custom templates
     
     # Check if credentials file exists
     if not os.path.exists(credentials_file):
@@ -34,10 +35,14 @@ def main():
             print("🔄 Starting fresh")
     
     print("🚀 Starting Bruteforce Template Generator")
-    print(f"📊 Max concurrent: {max_concurrent}")
-    print(f"📊 Max batches: {max_batches} (4 templates per batch, 2 subprocesses each)")
-    print(f"📊 Total templates: {max_batches * 4}")
-    print(f"🤖 Ollama model: {ollama_model}")
+    if custom_template_file:
+        print(f"🎯 Custom template mode: {custom_template_file}")
+        print("🚫 Ollama NOT needed for custom templates")
+    else:
+        print(f"📊 Max concurrent: {max_concurrent}")
+        print(f"📊 Max batches: {max_batches} (4 templates per batch, 2 subprocesses each)")
+        print(f"📊 Total templates: {max_batches * 4}")
+        print(f"🤖 Ollama model: {ollama_model}")
     print(f"📁 Resume mode: {'Yes' if resume else 'No'}")
     
     try:
@@ -47,7 +52,7 @@ def main():
             max_concurrent=max_concurrent
         )
         
-        generator.run_bruteforce(max_batches=max_batches, resume=resume)
+        generator.run_bruteforce(custom_template_file=custom_template_file, max_batches=max_batches, resume=resume)
         
     except KeyboardInterrupt:
         print("\n🛑 Interrupted by user")
