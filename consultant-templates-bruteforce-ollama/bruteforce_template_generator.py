@@ -781,6 +781,24 @@ class BruteforceTemplateGenerator:
         logger.info(f"🎯 Generated {len(templates)}/{count} validated templates successfully")
         return templates
 
+    def _validate_data_field_exists(self, data_field: str, region: str) -> bool:
+        """Check if a data field exists in the region's available fields"""
+        try:
+            # Get data fields for the region
+            region_fields = self.get_data_fields_for_region(region)
+            
+            # Check if the data field exists
+            for field in region_fields:
+                if field.get('id') == data_field:
+                    return True
+            
+            logger.warning(f"⚠️ Data field '{data_field}' not found in region {region}")
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Error validating data field '{data_field}': {e}")
+            return False
+
     def _process_template(self, template: str, data_field: str) -> str:
         """Process template to substitute data field placeholders"""
         # Common placeholders that need to be replaced
@@ -882,10 +900,23 @@ Generate a new template:"""
             logger.error(f"❌ Failed to regenerate template: {e}")
             return f"ts_rank({data_field}, 20)"  # Simple fallback
 
-    def simulate_template(self, template: str, region: str, data_field: str, neutralization: str, max_retries: int = 3) -> BruteforceResult:
+    def simulate_template(self, template: str, region: str, data_field: str, neutralization: str, max_retries: int = 3, use_ollama: bool = True) -> BruteforceResult:
         """Simulate a single template with retry mechanism that regenerates templates on failure"""
         start_time = time.time()
         current_template = template
+        
+        # Validate data field exists before simulation
+        if not self._validate_data_field_exists(data_field, region):
+            logger.info(f"⏭️ Skipping simulation - data field '{data_field}' not found in region {region}")
+            return BruteforceResult(
+                template=template,
+                region=region,
+                data_field=data_field,
+                neutralization=neutralization,
+                success=False,
+                error_message=f"Data field '{data_field}' not found in region {region}",
+                simulation_time=0.0
+            )
         
         for attempt in range(max_retries + 1):
             try:
@@ -955,11 +986,15 @@ Generate a new template:"""
                 result = self._monitor_simulation(progress_url, current_template, region, data_field, neutralization)
                 result.simulation_time = time.time() - start_time
                 
-                # If simulation failed, try to regenerate template
+                # If simulation failed, try to regenerate template (only if Ollama is enabled)
                 if not result.success and attempt < max_retries:
-                    logger.info(f"🔄 Simulation failed (attempt {attempt + 1}), regenerating template...")
-                    current_template = self._regenerate_template_on_error(current_template, result.error_message, region, data_field)
-                    continue
+                    if use_ollama:
+                        logger.info(f"🔄 Simulation failed (attempt {attempt + 1}), regenerating template...")
+                        current_template = self._regenerate_template_on_error(current_template, result.error_message, region, data_field)
+                        continue
+                    else:
+                        logger.info(f"🔄 Simulation failed (attempt {attempt + 1}), no regeneration for custom templates...")
+                        continue
                 
                 return result
                 
@@ -1122,84 +1157,101 @@ Generate a new template:"""
             error_message="Simulation timeout"
         )
 
-    def bruteforce_multiple_templates(self, templates: List[str]) -> List[BruteforceResult]:
-        """Bruteforce test multiple templates across ALL data fields and ALL regions with 2 subprocesses per template"""
+    def bruteforce_multiple_templates(self, templates: List[str], use_ollama: bool = True) -> List[BruteforceResult]:
+        """Bruteforce test multiple templates with region-specific field matching"""
         logger.info(f"🎯 Starting bruteforce test for {len(templates)} templates")
         
         all_results = []
         
-        # Get all data fields for all regions in specific order: USA → EUR → ASI → CHN → GLB
+        # For custom templates, we need to match templates to their correct regions
+        # Since templates are now generated per region, we need to determine which region each template belongs to
         region_order = ["USA", "EUR", "ASI", "CHN", "GLB"]
-        all_data_fields = {}
-        for region in region_order:
-            if region in self.regions:
-                data_fields = self.get_data_fields_for_region(region)
-                all_data_fields[region] = data_fields
-                logger.info(f"📊 Region {region}: {len(data_fields)} data fields")
         
-        # Extract operators from templates and filter data fields accordingly
-        template_operators = {}
-        for template in templates:
-            operators_in_template = self.extract_operators_from_template(template)
-            template_operators[template] = operators_in_template
-            logger.info(f"🔍 Template '{template}' uses operators: {operators_in_template}")
-        
-        # Create simulation tasks for each template with 2 subprocesses
+        # Create simulation tasks for each template with region-specific matching
         simulation_tasks = []
         for i, template in enumerate(templates):
             logger.info(f"📝 Template {i+1}: {template}")
             
-            # Split data fields into 2 groups for 2 subprocesses
-            all_region_tasks = []
-            template_ops = template_operators.get(template, [])
-            
+            # Determine which region this template belongs to by checking which region has the data field
+            template_region = None
             for region in region_order:
-                if region in all_data_fields:
-                    region_tasks = []
-                    data_fields = all_data_fields[region]
-                    
-                    # Filter data fields based on operators in this template
-                    if template_ops:
-                        # Check if any operator in the template doesn't support events
-                        needs_event_filtering = False
-                        for op in template_ops:
-                            if not self.operator_supports_event_inputs(op):
-                                needs_event_filtering = True
+                if region in self.regions:
+                    try:
+                        region_fields = self.get_data_fields_for_region(region)
+                        # Check if any field in this template exists in this region
+                        for field in region_fields:
+                            if field['id'] in template:
+                                template_region = region
                                 break
-                        
-                        if needs_event_filtering:
-                            data_fields = self.filter_data_fields_for_operator(data_fields, template_ops[0])
+                        if template_region:
+                            break
+                    except:
+                        continue
+            
+            if not template_region:
+                logger.warning(f"⚠️ Could not determine region for template: {template}")
+                continue
+            
+            logger.info(f"🎯 Template {i+1} belongs to region: {template_region}")
+            
+            # Get data fields for this specific region
+            try:
+                data_fields = self.get_data_fields_for_region(template_region)
+                logger.info(f"📊 Region {template_region}: {len(data_fields)} data fields")
+                
+                # Extract operators from template and filter data fields accordingly
+                template_ops = self.extract_operators_from_template(template)
+                logger.info(f"🔍 Template uses operators: {template_ops}")
+                
+                # Filter data fields based on operators in this template
+                if template_ops:
+                    # Check if any operator in the template doesn't support events
+                    needs_event_filtering = False
+                    for op in template_ops:
+                        if not self.operator_supports_event_inputs(op):
+                            needs_event_filtering = True
+                            break
                     
-                    for data_field in data_fields:
-                        for neutralization in self.regions[region].neutralization_options:
-                            region_tasks.append((template, region, data_field['id'], neutralization))
-                    all_region_tasks.extend(region_tasks)
-            
-            # Split tasks into 2 subprocesses
-            mid_point = len(all_region_tasks) // 2
-            subprocess_1_tasks = all_region_tasks[:mid_point]
-            subprocess_2_tasks = all_region_tasks[mid_point:]
-            
-            simulation_tasks.append({
-                'template': template,
-                'template_id': i + 1,
-                'subprocess_1': subprocess_1_tasks,
-                'subprocess_2': subprocess_2_tasks
-            })
-            
-            logger.info(f"📊 Template {i+1}: {len(subprocess_1_tasks)} tasks for subprocess 1, {len(subprocess_2_tasks)} tasks for subprocess 2")
+                    if needs_event_filtering:
+                        # Apply filtering using the first operator found that doesn't support events
+                        data_fields = self.filter_data_fields_for_operator(data_fields, template_ops[0])
+                
+                # Create tasks for this template in its specific region
+                region_tasks = []
+                for data_field in data_fields:
+                    for neutralization in self.regions[template_region].neutralization_options:
+                        region_tasks.append((template, template_region, data_field['id'], neutralization))
+                
+                # Split tasks into 2 subprocesses
+                mid_point = len(region_tasks) // 2
+                subprocess_1_tasks = region_tasks[:mid_point]
+                subprocess_2_tasks = region_tasks[mid_point:]
+                
+                simulation_tasks.append({
+                    'template': template,
+                    'template_id': i + 1,
+                    'region': template_region,
+                    'subprocess_1': subprocess_1_tasks,
+                    'subprocess_2': subprocess_2_tasks
+                })
+                
+                logger.info(f"📊 Template {i+1} ({template_region}): {len(subprocess_1_tasks)} tasks for subprocess 1, {len(subprocess_2_tasks)} tasks for subprocess 2")
+                
+            except Exception as e:
+                logger.error(f"❌ Failed to get data fields for region {template_region}: {e}")
+                continue
         
         logger.info(f"🚀 Created {len(simulation_tasks)} template groups with 2 subprocesses each")
         
         # Execute simulations with thread management
-        self._execute_multiple_templates_concurrent(simulation_tasks, all_results)
+        self._execute_multiple_templates_concurrent(simulation_tasks, all_results, use_ollama)
         
         # Save final progress after all templates
         self.save_progress()
         
         return all_results
 
-    def _execute_multiple_templates_concurrent(self, simulation_tasks: List[Dict], all_results: List[BruteforceResult]):
+    def _execute_multiple_templates_concurrent(self, simulation_tasks: List[Dict], all_results: List[BruteforceResult], use_ollama: bool = True):
         """Execute multiple templates with 2 subprocesses each using thread management"""
         logger.info(f"🚀 Starting concurrent execution of {len(simulation_tasks)} templates with 2 subprocesses each")
         
@@ -1215,7 +1267,8 @@ Generate a new template:"""
                 future_1 = self.executor.submit(
                     self._execute_subprocess_tasks,
                     template_group['subprocess_1'],
-                    f"Template_{template_id}_Subprocess_1"
+                    f"Template_{template_id}_Subprocess_1",
+                    use_ollama
                 )
                 all_futures.append(future_1)
                 logger.info(f"🚀 Started subprocess 1 for template {template_id}: {template[:30]}...")
@@ -1225,7 +1278,8 @@ Generate a new template:"""
                 future_2 = self.executor.submit(
                     self._execute_subprocess_tasks,
                     template_group['subprocess_2'],
-                    f"Template_{template_id}_Subprocess_2"
+                    f"Template_{template_id}_Subprocess_2",
+                    use_ollama
                 )
                 all_futures.append(future_2)
                 logger.info(f"🚀 Started subprocess 2 for template {template_id}: {template[:30]}...")
@@ -1243,14 +1297,14 @@ Generate a new template:"""
         
         logger.info(f"✅ Completed all {len(simulation_tasks)} templates with 2 subprocesses each")
 
-    def _execute_subprocess_tasks(self, tasks: List[Tuple], subprocess_name: str) -> List[BruteforceResult]:
+    def _execute_subprocess_tasks(self, tasks: List[Tuple], subprocess_name: str, use_ollama: bool = True) -> List[BruteforceResult]:
         """Execute a batch of tasks for a subprocess"""
         results = []
         logger.info(f"🔄 {subprocess_name}: Starting {len(tasks)} tasks")
         
         for i, (template, region, data_field, neutralization) in enumerate(tasks):
             try:
-                result = self.simulate_template(template, region, data_field, neutralization)
+                result = self.simulate_template(template, region, data_field, neutralization, use_ollama=use_ollama)
                 results.append(result)
                 
                 # Save progress after each simulation (only successful ones)
@@ -1301,7 +1355,7 @@ Generate a new template:"""
         
         for neutralization in all_neutralizations:
             try:
-                result = self.simulate_template(template, region, data_field, neutralization)
+                result = self.simulate_template(template, region, data_field, neutralization, use_ollama=use_ollama)
                 expansion_results.append(result)
                 
                 # Save progress after each neutralization expansion simulation (only successful ones)
@@ -1332,6 +1386,46 @@ Generate a new template:"""
         
         logger.info(f"🏁 Neutralization expansion completed: {len(expansion_results)} additional tests")
         return expansion_results
+
+    def load_custom_templates(self, custom_template_file: str = "custom_templates.json") -> List[str]:
+        """Load custom templates from JSON file and generate variations with anl/fnd data fields"""
+        try:
+            with open(custom_template_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            templates = []
+            for template_data in data.get('templates', []):
+                template_pattern = template_data['template']
+                data_field_types = template_data.get('data_field_types', ['anl', 'fnd'])
+                
+                # Generate templates for each region separately to ensure field-region matching
+                for region in ["USA", "EUR", "ASI", "CHN", "GLB"]:
+                    try:
+                        region_fields = self.get_data_fields_for_region(region)
+                        anl_fnd_fields = []
+                        
+                        for field in region_fields:
+                            field_id = field.get('id', '').lower()
+                            if any(prefix in field_id for prefix in data_field_types):
+                                anl_fnd_fields.append(field['id'])
+                        
+                        logger.info(f"📊 Found {len(anl_fnd_fields)} {data_field_types} fields for region {region}")
+                        
+                        # Generate template variations with region-specific data fields
+                        for field in anl_fnd_fields[:2]:  # Limit to first 2 fields per region to avoid too many combinations
+                            custom_template = template_pattern.replace('{data_field}', field)
+                            templates.append(custom_template)
+                            logger.info(f"🔧 Generated custom template for {region}: {custom_template[:50]}...")
+                            
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to get fields for region {region}: {e}")
+                        continue
+            
+            return templates
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to load custom templates: {e}")
+            return []
 
     def _execute_simulations_concurrent(self, simulation_tasks: List[Tuple], all_results: List[BruteforceResult]):
         """Execute simulations concurrently using thread management (legacy method)"""
@@ -1461,14 +1555,31 @@ Generate a new template:"""
         all_results = self.results.copy()  # Start with existing results if resuming
         
         if custom_template_file:
-            # Test custom template (single template mode)
-            template = self.load_custom_template(custom_template_file)
-            if template:
-                logger.info(f"🎯 Testing custom template: {template}")
-                results = self.bruteforce_multiple_templates([template])
-                all_results.extend(results)
-                self.results = all_results
-                self.save_results(all_results)
+            # Test custom templates (multiple templates mode) - NO OLLAMA NEEDED
+            if custom_template_file == "custom_templates.json":
+                # Load custom templates with anl/fnd field variations
+                templates = self.load_custom_templates(custom_template_file)
+                if templates:
+                    logger.info(f"🎯 Testing {len(templates)} custom templates with anl/fnd fields (NO OLLAMA)")
+                    logger.info("🚀 Starting direct bruteforce testing without AI generation...")
+                    # Direct bruteforce without any AI generation
+                    results = self.bruteforce_multiple_templates(templates, use_ollama=False)
+                    all_results.extend(results)
+                    self.results = all_results
+                    self.save_results(all_results)
+                else:
+                    logger.error("❌ No custom templates loaded")
+            else:
+                # Test single custom template (legacy mode)
+                template = self.load_custom_template(custom_template_file)
+                if template:
+                    logger.info(f"🎯 Testing custom template: {template} (NO OLLAMA)")
+                    logger.info("🚀 Starting direct bruteforce testing without AI generation...")
+                    # Direct bruteforce without any AI generation
+                    results = self.bruteforce_multiple_templates([template], use_ollama=False)
+                    all_results.extend(results)
+                    self.results = all_results
+                    self.save_results(all_results)
         else:
             # Generate and test multiple batches of 4 templates each
             for batch in range(start_batch, max_batches):

@@ -1,0 +1,18 @@
+{
+  "templates": [
+    {
+      "name": "normalize_group_neutralize_template",
+      "template": "normalize(group_neutralize(ts_zscore(ts_mean(ts_delta({data_field}, 1), 60), 500), country))",
+      "description": "Normalized group neutralized z-score of mean delta with country neutralization",
+      "data_field_types": ["anl", "fnd"],
+      "operators_used": ["normalize", "group_neutralize", "ts_zscore", "ts_mean", "ts_delta"]
+    },
+    {
+      "name": "signed_power_divide_template", 
+      "template": "signed_power(divide(ts_zscore({data_field}, 252), ts_std_dev(ts_zscore({data_field}, 10), 252)), 2)",
+      "description": "Signed power of divided z-scores with different time periods",
+      "data_field_types": ["anl", "fnd"],
+      "operators_used": ["signed_power", "divide", "ts_zscore", "ts_std_dev"]
+    }
+  ]
+}
