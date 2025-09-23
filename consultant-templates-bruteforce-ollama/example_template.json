@@ -1,0 +1,3 @@
+{
+    "template": "rank(close, 20)"
+}

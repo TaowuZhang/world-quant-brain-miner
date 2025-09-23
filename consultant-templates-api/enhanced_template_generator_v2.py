@@ -1698,7 +1698,7 @@ CRITICAL REQUIREMENTS:
 2. Use ONLY the provided field names exactly as shown (these are verified for delay={optimal_delay})
 3. Use proper syntax: operator(field_name, parameter) or operator(field1, field2, parameter)
 4. Follow parameter guidelines above - NO decimal parameters like 4.0, 0.5 unless specifically allowed
-5. NO special characters like %, ==, !=, &&, ||
+5. NO special characters like %, ==, !=, &&, ||, >, <, >=, <=, NO COMPARISON OPERATORS LIKE >, <, >=, <=
 6. NO missing commas between parameters
 7. Balanced parentheses
 8. Each template on a separate line
@@ -1709,6 +1709,7 @@ CRITICAL REQUIREMENTS:
 13. AVOID the failure patterns shown above - learn from previous mistakes
 14. Double-check parameter counts and types for each operator
 {requirement_15}
+15. mdl307_sales_pct_eu_7 > mdl307_cusip_3, filter=true is NOT a valid template, refrain from using comparison operators like >, <, >=, <= in the templates 
 
 VALID EXAMPLES:
 ts_rank(ts_delta(close, 1), 20)
