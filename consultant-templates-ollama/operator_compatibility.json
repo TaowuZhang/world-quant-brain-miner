@@ -20,13 +20,13 @@
       "compatibility_score": 0.0
     },
     "power": {
-      "failures": 24,
+      "failures": 25,
       "successes": 0,
       "error_types": {
         "other": 16,
-        "event_inputs": 8
+        "event_inputs": 9
       },
-      "last_failure": 1758668595.1585455,
+      "last_failure": 1758841806.148608,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -115,15 +115,15 @@
       "compatibility_score": 0.0
     },
     "subtract": {
-      "failures": 11,
+      "failures": 12,
       "successes": 0,
       "error_types": {
-        "other": 8,
+        "other": 9,
         "input_count": 1,
         "unknown_variable": 1,
         "event_inputs": 1
       },
-      "last_failure": 1758841661.374939,
+      "last_failure": 1758841723.7134833,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -151,15 +151,15 @@
       "compatibility_score": 0.0
     },
     "ts_zscore": {
-      "failures": 197,
+      "failures": 200,
       "successes": 2,
       "error_types": {
-        "other": 170,
+        "other": 173,
         "unknown_variable": 17,
         "syntax_error": 8,
         "event_inputs": 2
       },
-      "last_failure": 1758841703.598946,
+      "last_failure": 1758841802.118529,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -167,7 +167,7 @@
           "added_at": 1758665265.3850162
         }
       ],
-      "compatibility_score": 0.01
+      "compatibility_score": 0.009852216748768473
     },
     "ts_std_dev": {
       "failures": 211,
@@ -189,14 +189,14 @@
       "compatibility_score": 0.14516129032258066
     },
     "multiply": {
-      "failures": 5,
+      "failures": 6,
       "successes": 0,
       "error_types": {
         "input_count": 1,
         "event_inputs": 3,
-        "other": 1
+        "other": 2
       },
-      "last_failure": 1758841508.5082822,
+      "last_failure": 1758841721.6899405,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -498,13 +498,13 @@
       "compatibility_score": 0.0
     },
     "ts_scale": {
-      "failures": 35,
+      "failures": 36,
       "successes": 0,
       "error_types": {
-        "other": 34,
+        "other": 35,
         "event_inputs": 1
       },
-      "last_failure": 1758841675.4481723,
+      "last_failure": 1758841802.1195395,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -545,12 +545,13 @@
       "compatibility_score": 0.0
     },
     "log": {
-      "failures": 4,
-      "successes": 0,
+      "failures": 5,
+      "successes": 1,
       "error_types": {
-        "event_inputs": 4
+        "event_inputs": 4,
+        "other": 1
       },
-      "last_failure": 1758841705.6137807,
+      "last_failure": 1758841723.7084837,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -558,15 +559,16 @@
           "added_at": 1758841450.1299136
         }
       ],
-      "compatibility_score": 0.0
+      "compatibility_score": 0.14285714285714285
     },
     "min": {
-      "failures": 2,
+      "failures": 4,
       "successes": 0,
       "error_types": {
-        "event_inputs": 2
+        "event_inputs": 3,
+        "other": 1
       },
-      "last_failure": 1758841496.4382603,
+      "last_failure": 1758841806.1466007,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -577,12 +579,13 @@
       "compatibility_score": 0.0
     },
     "abs": {
-      "failures": 2,
+      "failures": 5,
       "successes": 1,
       "error_types": {
-        "event_inputs": 2
+        "event_inputs": 2,
+        "other": 3
       },
-      "last_failure": 1758841496.4435518,
+      "last_failure": 1758841723.7094812,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -590,10 +593,10 @@
           "added_at": 1758841466.2760305
         }
       ],
-      "compatibility_score": 0.25
+      "compatibility_score": 0.14285714285714285
     }
   },
-  "last_updated": 1758841717.6689913,
-  "total_failures": 2882,
-  "total_fixes": 1089
+  "last_updated": 1758841808.160447,
+  "total_failures": 2895,
+  "total_fixes": 1099
 }
