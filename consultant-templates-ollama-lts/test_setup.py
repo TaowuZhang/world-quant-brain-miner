@@ -50,7 +50,7 @@ def test_ollama():
         print("   Please ensure Ollama is installed and running:")
         print("   1. Install Ollama: https://ollama.ai/")
         print("   2. Start Ollama service")
-        print("   3. Pull a model: ollama pull qwen2.5-coder:7b")
+        print("   3. Pull a model: ollama pull llama3.1")
         return False
 
 def test_operators():
@@ -119,8 +119,8 @@ def main():
     if passed == total:
         print("🎉 All tests passed! You're ready to generate templates.")
         print("\nNext steps:")
-        print("1. Run: python run_enhanced_generator_v2.py")
-        print("2. Or: python run_enhanced_generator_v2.py --help")
+        print("1. Run: python run_generator.py")
+        print("2. Or: python template_generator.py --help")
         return 0
     else:
         print("❌ Some tests failed. Please fix the issues above.")

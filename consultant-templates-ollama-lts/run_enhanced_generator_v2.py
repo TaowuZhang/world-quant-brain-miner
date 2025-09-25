@@ -77,7 +77,7 @@ def main():
         print("Please ensure Ollama is installed and running:")
         print("1. Install Ollama: https://ollama.ai/")
         print("2. Start Ollama service")
-        print("3. Pull a model: ollama pull qwen2.5-coder:7b")
+        print("3. Pull a model: ollama pull llama3.1")
         return 1
     
     try:
@@ -105,7 +105,7 @@ def main():
         # Initialize generator
         generator = EnhancedTemplateGeneratorV2(
             'credential.txt', 
-            'qwen2.5-coder:7b',  # Default Ollama model
+            'llama3.1',  # Default Ollama model
             max_concurrent=8,
             progress_file=progress_file,
             results_file=results_file

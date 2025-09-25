@@ -164,6 +164,9 @@ class BruteforceTemplateGenerator:
         self.results_file = "bruteforce_results.json"
         self.progress_file = "bruteforce_progress.json"
         
+        # Track templates that have VECTOR field issues
+        self.templates_with_vector_issues = set()
+        
         # Success criteria
         self.success_criteria = {
             'min_sharpe': 1.25,
@@ -335,6 +338,7 @@ class BruteforceTemplateGenerator:
                 'success_criteria_met': len([r for r in self.results if self.check_success_criteria(r)]),
                 'current_batch': getattr(self, 'current_batch', 0),
                 'current_template': getattr(self, 'current_template', 0),
+                'templates_with_vector_issues': list(self.templates_with_vector_issues),
                 'resume_info': {
                     'can_resume': True,
                     'last_saved': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
@@ -369,6 +373,9 @@ class BruteforceTemplateGenerator:
             # Restore batch and template tracking
             self.current_batch = progress_data.get('current_batch', 0)
             self.current_template = progress_data.get('current_template', 0)
+            
+            # Restore VECTOR field issues tracking
+            self.templates_with_vector_issues = set(progress_data.get('templates_with_vector_issues', []))
             
             # Calculate statistics
             total_simulations = len(self.results)
@@ -619,6 +626,43 @@ class BruteforceTemplateGenerator:
         
         logger.info(f"🔍 Filtered data fields for operator '{operator_name}': {len(data_fields)} → {len(filtered_fields)} (removed {len(data_fields) - len(filtered_fields)} event fields)")
         return filtered_fields
+
+    def is_vector_field_error(self, error_message: str) -> bool:
+        """Check if error message indicates VECTOR field incompatibility or any field type incompatibility"""
+        vector_error_patterns = [
+            "VECTOR",
+            "vector",
+            "does not support VECTOR",
+            "VECTOR field",
+            "vector field",
+            "VECTOR data",
+            "vector data",
+            "does not support event inputs",
+            "event inputs",
+            "event field",
+            "event data"
+        ]
+        
+        error_lower = error_message.lower()
+        return any(pattern.lower() in error_lower for pattern in vector_error_patterns)
+
+    def filter_vector_fields_for_template(self, data_fields: List[Dict], template: str) -> List[Dict]:
+        """Filter out VECTOR fields for templates that have field type issues"""
+        if template in self.templates_with_vector_issues:
+            filtered_fields = []
+            vector_count = 0
+            for field in data_fields:
+                field_type = field.get('type', '').upper()
+                if field_type != 'VECTOR':
+                    filtered_fields.append(field)
+                else:
+                    vector_count += 1
+            
+            logger.error(f"🚫🚫🚫 SKIPPING ALL VECTOR FIELDS for template '{template[:30]}...': {len(data_fields)} → {len(filtered_fields)} (removed {vector_count} VECTOR fields)")
+            logger.error(f"🚫🚫🚫 This template has field type issues and will skip VECTOR fields for the rest of the run!")
+            return filtered_fields
+        
+        return data_fields
 
     def extract_operators_from_template(self, template: str) -> List[str]:
         """Extract operator names from a template string"""
@@ -905,6 +949,30 @@ Generate a new template:"""
         start_time = time.time()
         current_template = template
         
+        # Check if this template has field type issues and skip VECTOR fields
+        if template in self.templates_with_vector_issues:
+            # Get the data field type to check if it's VECTOR
+            try:
+                region_fields = self.get_data_fields_for_region(region)
+                for field in region_fields:
+                    if field.get('id') == data_field:
+                        field_type = field.get('type', '').upper()
+                        if field_type == 'VECTOR':
+                            logger.error(f"🚫🚫🚫 SKIPPING VECTOR FIELD '{data_field}' for template with field type issues!")
+                            logger.error(f"🚫🚫🚫 This template will skip ALL VECTOR fields for the rest of the run!")
+                            return BruteforceResult(
+                                template=template,
+                                region=region,
+                                data_field=data_field,
+                                neutralization=neutralization,
+                                success=False,
+                                error_message=f"Skipped VECTOR field '{data_field}' due to template field type issues",
+                                simulation_time=0.0
+                            )
+                        break
+            except Exception as e:
+                logger.warning(f"⚠️ Could not check field type for {data_field}: {e}")
+        
         # Validate data field exists before simulation
         if not self._validate_data_field_exists(data_field, region):
             logger.info(f"⏭️ Skipping simulation - data field '{data_field}' not found in region {region}")
@@ -1069,18 +1137,68 @@ Generate a new template:"""
                         if alpha_response.status_code == 200:
                             alpha_data = alpha_response.json()
                             
+                            # Check if alpha_data is valid
+                            if not isinstance(alpha_data, dict):
+                                logger.error(f"❌ Invalid alpha data format: {type(alpha_data)}")
+                                return BruteforceResult(
+                                    template=template,
+                                    region=region,
+                                    data_field=data_field,
+                                    neutralization=neutralization,
+                                    success=False,
+                                    error_message=f"Invalid alpha data format: {type(alpha_data)}"
+                                )
+                            
+                            # Log the alpha data structure for debugging
+                            logger.debug(f"Alpha data structure: {list(alpha_data.keys())}")
+                            
+                            # Extract performance metrics
+                            sharpe = alpha_data.get('sharpe', 0.0)
+                            returns = alpha_data.get('returns', 0.0)
+                            max_drawdown = alpha_data.get('maxDrawdown', 0.0)
+                            margin = alpha_data.get('margin', 0.0)
+                            fitness = alpha_data.get('fitness', 0.0)
+                            turnover = alpha_data.get('turnover', 0.0)
+                            
+                            # Check if we have valid performance data
+                            # If all key metrics are 0.0, it likely means the simulation didn't complete properly
+                            has_valid_data = any([
+                                sharpe != 0.0,
+                                returns != 0.0,
+                                margin != 0.0,
+                                fitness != 0.0,
+                                turnover != 0.0
+                            ])
+                            
+                            # Additional check: ensure we have at least some meaningful data
+                            # A successful simulation should have at least sharpe or returns > 0
+                            has_meaningful_data = sharpe != 0.0 or returns != 0.0
+                            
+                            if not has_valid_data or not has_meaningful_data:
+                                logger.warning(f"⚠️ Simulation completed but returned zero/invalid metrics - treating as failure")
+                                logger.warning(f"   Sharpe: {sharpe}, Returns: {returns}, Margin: {margin}, Fitness: {fitness}")
+                                logger.warning(f"   Alpha data keys: {list(alpha_data.keys())}")
+                                return BruteforceResult(
+                                    template=template,
+                                    region=region,
+                                    data_field=data_field,
+                                    neutralization=neutralization,
+                                    success=False,
+                                    error_message="Simulation completed but returned zero/invalid performance metrics"
+                                )
+                            
                             return BruteforceResult(
                                 template=template,
                                 region=region,
                                 data_field=data_field,
                                 neutralization=neutralization,
                                 success=True,
-                                sharpe=alpha_data.get('sharpe', 0.0),
-                                returns=alpha_data.get('returns', 0.0),
-                                max_drawdown=alpha_data.get('maxDrawdown', 0.0),
-                                margin=alpha_data.get('margin', 0.0),
-                                fitness=alpha_data.get('fitness', 0.0),
-                                turnover=alpha_data.get('turnover', 0.0)
+                                sharpe=sharpe,
+                                returns=returns,
+                                max_drawdown=max_drawdown,
+                                margin=margin,
+                                fitness=fitness,
+                                turnover=turnover
                             )
                         else:
                             logger.error(f"Failed to fetch alpha data: {alpha_response.status_code}")
@@ -1100,6 +1218,11 @@ Generate a new template:"""
                         else:
                             error_msg = data.get('error', f'Simulation {status.lower()}')
                         
+                        # Also check the 'message' field for error details
+                        message_error = data.get('message', '')
+                        if message_error:
+                            error_msg = message_error
+                        
                         error_details = data.get('errorDetails', '')
                         error_type = data.get('errorType', '')
                         error_code = data.get('errorCode', '')
@@ -1112,6 +1235,13 @@ Generate a new template:"""
                             full_error += f" | Type: {error_type}"
                         if error_code:
                             full_error += f" | Code: {error_code}"
+                        
+                        # Check if this is a field type error (VECTOR, event, etc.)
+                        if self.is_vector_field_error(full_error):
+                            logger.error(f"🚫🚫🚫 FIELD TYPE ERROR DETECTED! Template '{template[:30]}...' will skip ALL VECTOR fields for the rest of the run!")
+                            logger.error(f"🚫🚫🚫 ERROR: {full_error}")
+                            logger.error(f"🚫🚫🚫 This template is now marked to skip VECTOR fields permanently!")
+                            self.templates_with_vector_issues.add(template)
                         
                         # Log the full error details
                         if status == 'WARNING':
@@ -1216,9 +1346,19 @@ Generate a new template:"""
                         # Apply filtering using the first operator found that doesn't support events
                         data_fields = self.filter_data_fields_for_operator(data_fields, template_ops[0])
                 
+                # Filter out VECTOR fields if template has VECTOR field issues
+                data_fields = self.filter_vector_fields_for_template(data_fields, template)
+                
                 # Create tasks for this template in its specific region
                 region_tasks = []
                 for data_field in data_fields:
+                    # Skip VECTOR fields if template has field type issues
+                    if template in self.templates_with_vector_issues:
+                        field_type = data_field.get('type', '').upper()
+                        if field_type == 'VECTOR':
+                            logger.error(f"🚫🚫🚫 SKIPPING VECTOR FIELD '{data_field['id']}' - template has field type issues!")
+                            continue
+                    
                     for neutralization in self.regions[template_region].neutralization_options:
                         region_tasks.append((template, template_region, data_field['id'], neutralization))
                 
@@ -1318,7 +1458,7 @@ Generate a new template:"""
                     # Check if result meets success criteria for neutralization expansion
                     if self.check_success_criteria(result):
                         logger.info(f"🏆 SUCCESS CRITERIA MET! Expanding neutralization options for {template[:30]}...")
-                        expansion_results = self._expand_neutralization_options(template, region, data_field)
+                        expansion_results = self._expand_neutralization_options(template, region, data_field, use_ollama)
                         results.extend(expansion_results)
                         
                         # Save progress after neutralization expansion
@@ -1346,7 +1486,7 @@ Generate a new template:"""
         logger.info(f"🏁 {subprocess_name}: Completed {len(tasks)} tasks with {len([r for r in results if r.success])} successes")
         return results
     
-    def _expand_neutralization_options(self, template: str, region: str, data_field: str) -> List[BruteforceResult]:
+    def _expand_neutralization_options(self, template: str, region: str, data_field: str, use_ollama: bool = True) -> List[BruteforceResult]:
         """Run all neutralization options for successful templates"""
         expansion_results = []
         all_neutralizations = self.regions[region].neutralization_options

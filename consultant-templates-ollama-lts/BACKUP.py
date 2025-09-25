@@ -504,10 +504,6 @@ class EnhancedTemplateGeneratorV2:
         # Operator usage tracking for diversity
         self.operator_usage_count = {}  # Track how often each operator is used
         
-        # Template generation tracking to avoid repetition
-        self.recent_templates = []  # Store recently generated templates
-        self.max_recent_templates = 50  # Keep track of last 50 templates
-        
         # Error learning system - store failure patterns per region
         self.failure_patterns = {}  # {region: [{'template': str, 'error': str, 'timestamp': float}]}
         self.max_failures_per_region = 10  # Keep last 10 failures per region
@@ -567,17 +563,6 @@ class EnhancedTemplateGeneratorV2:
         
         # For ASI, CHN, and GLB, only delay=1 is available
         if region in ["ASI", "CHN", "GLB"]:
-            return 1
-        
-        # For EUR, prefer delay=0 (higher multiplier: 1.7 vs 1.4)
-        if region == "EUR":
-            delay_0_mult = multipliers.get("0", 1.0)
-            delay_1_mult = multipliers.get("1", 1.0)
-            if delay_0_mult > delay_1_mult:
-                logger.info(f"EUR: Preferring delay=0 (multiplier: {delay_0_mult} vs {delay_1_mult})")
-                return 0
-            else:
-                logger.info(f"EUR: Using delay=1 (multiplier: {delay_1_mult} vs {delay_0_mult})")
             return 1
         
         # For other regions, use weighted selection based on multipliers
@@ -911,17 +896,7 @@ MAXIMUM SUCCESS FOCUS:
         
         fields_desc = []
         for field in data_fields:
-            field_type = field.get('type', 'REGULAR')
-            
-            # Add field type information with operator compatibility
-            if field_type == 'VECTOR':
-                field_type_info = "VECTOR (use Cross Sectional operators: normalize, quantile, rank, scale, winsorize, zscore, vec_avg, vec_sum, vec_max, vec_min)"
-            elif field_type == 'MATRIX':
-                field_type_info = "MATRIX (use Time Series operators: ts_rank, ts_delta, ts_mean, ts_std, ts_corr, ts_regression)"
-            else:
-                field_type_info = "REGULAR (use standard operators)"
-            
-            fields_desc.append(f"- {field['id']}: {field.get('description', 'No description')} [{field_type_info}]")
+            fields_desc.append(f"- {field['id']}: {field.get('description', 'No description')}")
         
         # Current performance metrics
         current_metrics = f"""
@@ -939,9 +914,6 @@ Current Performance:
         blacklist_section = f"""
 🚫 BLACKLISTED OPERATORS - DO NOT USE THESE:
 {chr(10).join([f'- {op} (BLACKLISTED - DO NOT USE)' for op in blacklisted_operators])}""" if blacklisted_operators else "🚫 BLACKLISTED OPERATORS: No operators currently blacklisted"
-        
-        # Get recent templates warning
-        recent_warning = self._get_recent_templates_warning()
         
         optimization_prompt = f"""WORLDQUANT BRAIN ALPHA OPTIMIZATION EXPERT SYSTEM
 
@@ -965,8 +937,6 @@ OPERATOR ARSENAL - USE ANY COMBINATION:
 
 DATA FIELD ARSENAL - USE THESE EXACT FIELDS:
 {chr(10).join(fields_desc)}
-
-{recent_warning}
 
 {blacklist_section}
 
@@ -1456,10 +1426,10 @@ Generate 3 PROFITABLE optimized alpha expressions:"""
             return None
         
         logger.info(f"🎯 EXPLOITATION FALLBACK: Generating new template for {target_region} with {len(data_fields)} fields")
-        logger.info(f"🤖 EXPLOITATION FALLBACK: Using step-by-step generation (same as default mode)")
+        logger.info(f"🤖 EXPLOITATION FALLBACK: Using pure Ollama generation (same as default mode)")
         
-        # Use step-by-step generation (same as default mode)
-        templates = self._generate_step_by_step_templates(target_region, 1)
+        # Use pure Ollama generation (same as default mode)
+        templates = self._generate_ollama_only_templates(target_region, 1)
         
         if not templates:
             logger.error(f"🎯 EXPLOITATION FALLBACK: Failed to generate Ollama template for {target_region}")
@@ -1736,7 +1706,75 @@ Generate 3 PROFITABLE optimized alpha expressions:"""
     
     def validate_template_syntax(self, template: str, valid_fields: List[str]) -> Tuple[bool, str]:
         """Validate template syntax and field usage - more lenient approach"""
-        return True, ""
+        try:
+            # Check for blacklisted operators
+            blacklisted_operators = self.load_operator_blacklist()
+            for operator in blacklisted_operators:
+                if operator in template:
+                    return False, f"Blacklisted operator: {operator}"
+            
+            # Check for comparison operators that are invalid in alpha expressions
+            comparison_ops = ['>', '<', '>=', '<=', '==', '!=', '&&', '||', '%']
+            for op in comparison_ops:
+                if op in template:
+                    return False, f"Invalid comparison operator: {op}"
+            
+            # Check for balanced parentheses
+            if template.count('(') != template.count(')'):
+                return False, "Unbalanced parentheses"
+            
+            # Check for missing commas between parameters
+            if re.search(r'[a-zA-Z_][a-zA-Z0-9_]*\s+[a-zA-Z_][a-zA-Z0-9_]*\s*\(', template):
+                return False, "Missing comma between parameters"
+            
+            # Basic syntax check - ensure it looks like a function call
+            # Allow for negation patterns like subtract(0, ...) or multiply(-1, ...)
+            if not (re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*\(', template) or 
+                    re.match(r'^subtract\(0,\s*', template) or 
+                    re.match(r'^multiply\(-1,\s*', template)):
+                return False, "Invalid function call syntax"
+            
+            # Check for obvious field name issues - only check for very obvious problems
+            # Look for field names that are clearly invalid (too long, weird characters)
+            field_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b'
+            identifiers = re.findall(field_pattern, template)
+            
+            for identifier in identifiers:
+                # Skip if it's a number
+                try:
+                    float(identifier)
+                    continue
+                except ValueError:
+                    pass
+                
+                # Skip common keywords
+                if identifier.lower() in ['true', 'false', 'if', 'else', 'and', 'or', 'not', 'std']:
+                    continue
+                
+                # Check for obviously invalid identifiers (too long, weird patterns)
+                if len(identifier) > 50:
+                    return False, f"Identifier too long: {identifier}"
+                
+                # Check if this is a valid operator first
+                valid_operators = [op['name'] for op in self.operators]
+                if identifier in valid_operators:
+                    # It's a valid operator, continue
+                    continue
+                
+                # Check if this is a field name (should be in valid_fields)
+                # Field names typically start with 'fnd', 'fn_', or are common field names
+                is_likely_field = (identifier.startswith('fnd') or 
+                                 identifier.startswith('fn_') or 
+                                 identifier in ['close', 'open', 'high', 'low', 'volume', 'returns', 'industry', 'sector', 'cap'])
+                
+                if is_likely_field and identifier not in valid_fields:
+                    return False, f"Unknown field: {identifier}"
+                # If it's not a field and not an operator, it might be a number or other valid token
+            
+            return True, ""
+            
+        except Exception as e:
+            return False, f"Validation error: {str(e)}"
     
     def load_operator_blacklist(self) -> List[str]:
         """Load blacklisted operators from JSON file"""
@@ -1970,477 +2008,29 @@ Generate 3 PROFITABLE optimized alpha expressions:"""
             logger.info(f"🔄 LOOP PHASE: Resuming normal explore/exploit template generation for {region}")
             # Continue with normal template generation
         
-        # DEFAULT: Use step-by-step generation (separate field and operator selection)
-        logger.info(f"🤖 STEP-BY-STEP MODE (DEFAULT): Expression will be generated step-by-step with separate field and operator selection")
-        return self._generate_step_by_step_templates(region, num_templates)
+        # DEFAULT: Use Ollama-only generation (entirely generated by Ollama without data field substitution)
+        logger.info(f"🤖 OLLAMA-ONLY MODE (DEFAULT): Expression will be entirely generated by Ollama without data field substitution")
+        return self._generate_ollama_only_templates(region, num_templates)
     
-    def _generate_step_by_step_templates(self, region: str, num_templates: int, delay: int = None) -> List[Dict]:
-        """Generate templates using step-by-step approach: 1) Choose fields, 2) Choose operators, 3) Build template"""
-        logger.info(f"🤖 STEP-BY-STEP GENERATION: Generating {num_templates} templates for {region}")
+    def _generate_ollama_only_templates(self, region: str, num_templates: int, delay: int = None) -> List[Dict]:
+        """Generate templates entirely by Ollama without data field substitution (DEFAULT MODE)"""
+        logger.info(f"🤖 OLLAMA-ONLY (DEFAULT): Generating {num_templates} templates entirely by Ollama for {region}")
         
-        # If delay is None, use optimal delay
+        # Get basic region config
+        config = self.region_configs[region]
         if delay is None:
-            delay = self.select_optimal_delay(region)
-            logger.info(f"🔧 DELAY SYNC: Using optimal delay {delay} for {region}")
-        
-        templates = []
-        
-        for i in range(num_templates):
-            logger.info(f"🔄 STEP-BY-STEP: Template {i+1}/{num_templates}")
-            
-            # Step 1: Choose data fields
-            selected_fields = self._choose_data_fields_step(region, delay)
-            if not selected_fields:
-                logger.warning(f"❌ No fields selected for template {i+1}")
-                continue
-            
-            # Step 2: Choose operators
-            selected_operators = self._choose_operators_step(region, selected_fields)
-            if not selected_operators:
-                logger.warning(f"❌ No operators selected for template {i+1}")
-                continue
-            
-            # Step 3: Build template
-            template = self._build_template_step(region, selected_fields, selected_operators)
-            if not template:
-                logger.warning(f"❌ Template building failed for template {i+1}")
-                continue
-            
-            # Step 4: Validate and add to results
-            is_valid, fixed_template = self._validate_template_step(template, region, delay)
-            if is_valid:
-                templates.append({
-                    'template': fixed_template,
-                    'region': region,
-                    'delay': delay,
-                    'fields_used': [f['id'] for f in selected_fields],
-                    'operators_used': [op['name'] for op in selected_operators],
-                    'generated_at': datetime.now().isoformat()
-                })
-                logger.info(f"✅ STEP-BY-STEP Template {i+1}: {fixed_template}")
+            optimal_delay = self.select_optimal_delay(region)
         else:
-                logger.warning(f"❌ Template validation failed for template {i+1}")
+            optimal_delay = delay
+            logger.info(f"🔧 DELAY SYNC: Using provided delay {delay} for template generation")
         
-        return templates
-    
-    def _choose_data_fields_step(self, region: str, delay: int = None) -> List[Dict]:
-        """Step 1: Let Ollama choose data fields"""
-        logger.info(f"📊 STEP 1: Choosing data fields for {region}")
-        
-        # If delay is None, use optimal delay
-        if delay is None:
-            delay = self.select_optimal_delay(region)
-            logger.info(f"🔧 DELAY SYNC: Using optimal delay {delay} for {region}")
-        
-        # Get data fields
-        data_fields = self.get_data_fields_for_region(region, delay)
+        # Get data fields for this region to show available fields
+        data_fields = self.get_data_fields_for_region(region, optimal_delay)
         if not data_fields:
-            logger.warning(f"❌ No data fields found for {region} delay={delay}")
+            logger.warning(f"No data fields found for region {region}")
             return []
         
-        # Log cache file info for debugging
-        cache_file = f"data_fields_cache_{region}_{delay}.json"
-        if os.path.exists(cache_file):
-            logger.info(f"📁 Using cache file: {cache_file}")
-        else:
-            logger.info(f"📁 No cache file found: {cache_file}, using API data")
-        
-        # CRITICAL: Double-check that all fields are region-specific
-        region_specific_fields = []
-        cross_region_fields = []
-        for field in data_fields:
-            field_region = field.get('region', '')
-            if field_region == region:
-                region_specific_fields.append(field)
-            else:
-                cross_region_fields.append(field)
-                logger.warning(f"🚨 CROSS-REGION FIELD DETECTED: {field.get('id', 'UNKNOWN')} from {field_region} used in {region}")
-        
-        if len(region_specific_fields) == 0:
-            logger.error(f"🚨 NO REGION-SPECIFIC FIELDS: All fields are from other regions!")
-            logger.error(f"🚨 Cross-region fields found: {[f.get('id', 'UNKNOWN') for f in cross_region_fields[:5]]}")
-            return []
-        
-        if len(region_specific_fields) != len(data_fields):
-            logger.warning(f"🔧 REGION FILTER: Filtered {len(data_fields) - len(region_specific_fields)} cross-region fields")
-            logger.warning(f"🔧 Using {len(region_specific_fields)} region-specific fields for {region}")
-            data_fields = region_specific_fields
-        
-        # PRIORITIZE LOW USAGE FIELDS: Sort by usage to prefer underused fields
-        def get_usage_score(field):
-            user_count = field.get('userCount', 0)
-            alpha_count = field.get('alphaCount', 0)
-            # Lower usage = better score (we want underused fields)
-            return user_count + alpha_count
-        
-        # Sort by usage score (ascending - lowest usage first)
-        data_fields.sort(key=get_usage_score)
-        
-        # Log usage statistics for debugging
-        usage_stats = []
-        for field in data_fields[:10]:  # Show first 10 fields
-            user_count = field.get('userCount', 0)
-            alpha_count = field.get('alphaCount', 0)
-            usage_stats.append(f"{field['id']}: users={user_count}, alphas={alpha_count}")
-        
-        logger.info(f"📊 USAGE-BASED PRIORITIZATION: Preferring low-usage fields")
-        logger.info(f"📊 TOP 10 LOW-USAGE FIELDS: {usage_stats[:5]}")
-        
-        # Create field selection prompt with indexed list
-        fields_desc = []
-        for i, field in enumerate(data_fields[:30]):  # Show first 30 fields with indices
-            field_type = field.get('type', 'REGULAR')
-            if field_type == 'VECTOR':
-                field_type_info = "VECTOR (use Cross Sectional operators: normalize, quantile, rank, scale, winsorize, zscore)"
-            elif field_type == 'MATRIX':
-                field_type_info = "MATRIX (use Time Series operators: ts_rank, ts_delta, ts_mean, ts_std, ts_corr, ts_regression, vec_avg, vec_sum, vec_max, vec_min)"
-            else:
-                field_type_info = "REGULAR (use standard operators)"
-            
-            # Include usage information
-            user_count = field.get('userCount', 0)
-            alpha_count = field.get('alphaCount', 0)
-            usage_info = f"users={user_count}, alphas={alpha_count}"
-            fields_desc.append(f"[{i}] {field['id']}: {field.get('description', 'No description')} [{field_type_info}] [{usage_info}]")
-        
-        prompt = f"""
-🎯 DATA FIELD SELECTION FOR {region.upper()}
-
-Choose 2-4 data fields by selecting their INDEX NUMBERS from the list below:
-
-AVAILABLE DATA FIELDS (sorted by usage - lowest usage first):
-{chr(10).join(fields_desc)}
-
-INSTRUCTIONS:
-- Choose 2-4 fields by their INDEX NUMBERS (e.g., [0, 1, 4])
-- PRIORITIZE LOW-USAGE FIELDS: Prefer fields with low userCount and alphaCount
-- High usage fields (high userCount/alphaCount) have high production correlation and won't add value
-- Mix different field types: VECTOR fields need Cross Sectional operators, MATRIX fields need Time Series operators
-- Consider at least one underused field for better alpha potential
-- Return ONLY the index numbers in square brackets
-
-RESPONSE FORMAT:
-[0, 1, 4]
-"""
-        
-        try:
-            import ollama
-            response = ollama.chat(
-                model=self.ollama_model,
-                messages=[{'role': 'user', 'content': prompt}],
-                options={'temperature': 0.7, 'top_p': 0.9}
-            )
-            
-            # Parse response to get field indices
-            content = response['message']['content'].strip()
-            logger.info(f"📊 STEP 1 RESPONSE: {content}")
-            
-            # Extract indices from response (e.g., [0, 1, 4] or 0, 1, 4)
-            import re
-            indices = []
-            
-            # Try to find indices in square brackets
-            bracket_match = re.search(r'\[([0-9,\s]+)\]', content)
-            if bracket_match:
-                indices_str = bracket_match.group(1)
-                indices = [int(x.strip()) for x in indices_str.split(',') if x.strip().isdigit()]
-            else:
-                # Try to find individual numbers
-                numbers = re.findall(r'\b(\d+)\b', content)
-                indices = [int(x) for x in numbers if int(x) < len(data_fields[:30])]
-            
-            # Get selected fields by index
-            selected_fields = []
-            for idx in indices:
-                if 0 <= idx < len(data_fields[:30]):
-                    selected_fields.append(data_fields[idx])
-            
-            logger.info(f"📊 STEP 1 COMPLETE: Selected {len(selected_fields)} fields: {[f['id'] for f in selected_fields]}")
-            return selected_fields
-            
-        except Exception as e:
-            logger.error(f"❌ STEP 1 FAILED: {e}")
-            return []
-    
-    def _choose_operators_step(self, region: str, selected_fields: List[Dict]) -> List[Dict]:
-        """Step 2: Let Ollama choose operators based on selected fields"""
-        logger.info(f"⚙️ STEP 2: Choosing operators for {len(selected_fields)} fields")
-        
-        # Analyze field types
-        vector_fields = [f for f in selected_fields if f.get('type') == 'VECTOR']
-        matrix_fields = [f for f in selected_fields if f.get('type') == 'MATRIX']
-        regular_fields = [f for f in selected_fields if f.get('type') == 'REGULAR']
-        
-        # Get compatible operators dynamically based on field types and operator scope
-        compatible_operators = []
-        
-        # Get field types present in selected fields
-        field_types = set()
-        if vector_fields:
-            field_types.add('VECTOR')
-        if matrix_fields:
-            field_types.add('MATRIX')
-        if regular_fields:
-            field_types.add('REGULAR')
-        
-        # Dynamically determine compatible operators based on field types and operator category
-        for op in self.operators:
-            op_scope = op.get('scope', [])
-            op_category = op.get('category', '')
-            
-            # Check if operator is compatible with any of the field types
-            is_compatible = False
-            
-            # VECTOR fields: Allow all operators, but replace field if incompatible
-            if 'VECTOR' in field_types:
-                is_compatible = True
-            
-            # MATRIX fields: Use Time Series operators and Vector operators
-            if 'MATRIX' in field_types:
-                if op_category == 'Time Series' or op_category == 'Vector':
-                    is_compatible = True
-            
-            # REGULAR fields: Use all operators (Arithmetic, Logical, Time Series, Cross Sectional, Vector, Transformational, Group)
-            if 'REGULAR' in field_types:
-                if op_category in ['Arithmetic', 'Logical', 'Time Series', 'Cross Sectional', 'Vector', 'Transformational', 'Group']:
-                    is_compatible = True
-            
-            if is_compatible:
-                compatible_operators.append(op)
-        
-        # Remove duplicates
-        compatible_operators = list({op['name']: op for op in compatible_operators}.values())
-        
-        # CRITICAL: Filter out blacklisted operators
-        if self.operator_blacklist:
-            original_count = len(compatible_operators)
-            compatible_operators = [op for op in compatible_operators if op['name'] not in self.operator_blacklist]
-            filtered_count = len(compatible_operators)
-            if original_count != filtered_count:
-                logger.info(f"🚫 BLACKLIST FILTER: Removed {original_count - filtered_count} blacklisted operators")
-                logger.info(f"🚫 BLACKLISTED OPERATORS: {list(self.operator_blacklist)}")
-        
-        if not compatible_operators:
-            logger.warning(f"⚠️ NO COMPATIBLE OPERATORS: All operators are blacklisted or incompatible")
-            return []
-        
-        # Create operator selection prompt with indexed list
-        operators_desc = []
-        for i, op in enumerate(compatible_operators[:20]):  # Show first 20 compatible operators with indices
-            operators_desc.append(f"[{i}] {op['name']}: {op['description']}")
-        
-        prompt = f"""
-⚙️ OPERATOR SELECTION FOR {region.upper()}
-
-Based on your selected fields, choose 2-4 compatible operators by selecting their INDEX NUMBERS:
-
-SELECTED FIELDS:
-{chr(10).join([f"- {f['id']} ({f.get('type', 'REGULAR')})" for f in selected_fields])}
-
-COMPATIBLE OPERATORS:
-{chr(10).join(operators_desc)}
-
-INSTRUCTIONS:
-- Choose 2-4 operators by their INDEX NUMBERS (e.g., [0, 1, 4])
-- VECTOR fields need Cross Sectional operators (normalize, quantile, rank, scale, winsorize, zscore)
-- MATRIX fields need Time Series operators (ts_rank, ts_delta, ts_mean, ts_std, ts_corr, ts_regression, vec_avg, vec_sum, vec_max, vec_min)
-- Mix different operator types for interesting combinations
-- Return ONLY the index numbers in square brackets
-
-RESPONSE FORMAT:
-[0, 1, 4]
-"""
-        
-        try:
-            import ollama
-            response = ollama.chat(
-                model=self.ollama_model,
-                messages=[{'role': 'user', 'content': prompt}],
-                options={'temperature': 0.7, 'top_p': 0.9}
-            )
-            
-            # Parse response to get operator indices
-            content = response['message']['content'].strip()
-            logger.info(f"⚙️ STEP 2 RESPONSE: {content}")
-            
-            # Extract indices from response (e.g., [0, 1, 4] or 0, 1, 4)
-            import re
-            indices = []
-            
-            # Try to find indices in square brackets
-            bracket_match = re.search(r'\[([0-9,\s]+)\]', content)
-            if bracket_match:
-                indices_str = bracket_match.group(1)
-                indices = [int(x.strip()) for x in indices_str.split(',') if x.strip().isdigit()]
-            else:
-                # Try to find individual numbers
-                numbers = re.findall(r'\b(\d+)\b', content)
-                indices = [int(x) for x in numbers if int(x) < len(compatible_operators[:20])]
-            
-            # Get selected operators by index
-            selected_operators = []
-            for idx in indices:
-                if 0 <= idx < len(compatible_operators[:20]):
-                    selected_operators.append(compatible_operators[idx])
-            
-            logger.info(f"⚙️ STEP 2 COMPLETE: Selected {len(selected_operators)} operators: {[op['name'] for op in selected_operators]}")
-            return selected_operators
-            
-        except Exception as e:
-            logger.error(f"❌ STEP 2 FAILED: {e}")
-            return []
-    
-    def _build_template_step(self, region: str, selected_fields: List[Dict], selected_operators: List[Dict]) -> str:
-        """Step 3: Let Ollama build the template using selected fields and operators"""
-        logger.info(f"🔨 STEP 3: Building template with {len(selected_fields)} fields and {len(selected_operators)} operators")
-        
-        # CRITICAL: Validate that all selected fields are region-specific
-        for field in selected_fields:
-            field_region = field.get('region', '')
-            if field_region != region:
-                logger.error(f"🚨 CROSS-REGION FIELD IN TEMPLATE: {field.get('id', 'UNKNOWN')} from {field_region} used in {region}")
-                logger.error(f"🚨 This will cause 'unknown variable' errors in simulation!")
-                # Continue anyway, but log the issue
-        
-        # Create template building prompt
-        fields_info = []
-        for field in selected_fields:
-            field_type = field.get('type', 'REGULAR')
-            # Get compatible operators dynamically
-            compatible_ops = self._get_compatible_operators_for_field_type(field_type)
-            field_type_info = f"{field_type} (use: {', '.join(compatible_ops[:10])})"  # Show first 10 operators
-            fields_info.append(f"- {field['id']}: {field.get('description', 'No description')} [{field_type_info}]")
-        
-        operators_info = []
-        for op in selected_operators:
-            operators_info.append(f"- {op['name']}: {op['description']}")
-        
-        prompt = f"""
-🔨 ALPHA EXPRESSION BUILDER FOR {region.upper()}
-
-You are building a WorldQuant Brain alpha expression. This is NOT SQL - it's a mathematical expression using operators and data fields.
-
-SELECTED FIELDS:
-{chr(10).join(fields_info)}
-
-SELECTED OPERATORS:
-{chr(10).join(operators_info)}
-
-CRITICAL INSTRUCTIONS:
-- This is a MATHEMATICAL EXPRESSION, not SQL code
-- Use ONLY the selected fields and operators above
-- Follow field type compatibility rules:
-  * VECTOR fields: Can use any operators, but incompatible combinations will be fixed by replacing the field
-  * MATRIX fields: Use Time Series operators (ts_rank, ts_delta, ts_mean, ts_std, ts_corr, ts_regression) and Vector operators
-  * REGULAR fields: Use all operators (Cross Sectional, Time Series, Vector, Arithmetic, Logical, Transformational, Group)
-- Create a valid alpha expression like: normalize(close) + rank(volume)
-- Use proper syntax with balanced parentheses
-- Return ONLY the alpha expression, no explanations, no code blocks, no markdown
-- DO NOT include "plaintext" prefix or any other prefixes
-
-EXAMPLES OF VALID ALPHA EXPRESSIONS:
-- normalize(close) + rank(volume)  # Cross Sectional operators with any field type
-- ts_rank(close) + ts_delta(volume)  # Time Series operators with MATRIX fields
-- vec_avg(close) + vec_sum(volume)  # Vector operators with MATRIX fields
-
-RESPONSE FORMAT (return only the expression, no prefixes):
-normalize(close) + rank(volume)
-"""
-        
-        try:
-            import ollama
-            response = ollama.chat(
-                model=self.ollama_model,
-                messages=[{'role': 'user', 'content': prompt}],
-                options={'temperature': 0.5, 'top_p': 0.9}
-            )
-            
-            template = response['message']['content'].strip()
-            
-            # Clean up any SQL blocks or markdown that Ollama might generate
-            if '```' in template:
-                # Extract content between code blocks
-                import re
-                code_blocks = re.findall(r'```(?:sql|python|javascript)?\n?(.*?)\n?```', template, re.DOTALL)
-                if code_blocks:
-                    template = code_blocks[0].strip()
-                else:
-                    # Remove the ``` wrapper
-                    template = template.replace('```sql', '').replace('```python', '').replace('```javascript', '').replace('```', '').strip()
-            
-            # Remove any field descriptions or explanations
-            lines = template.split('\n')
-            alpha_lines = []
-            for line in lines:
-                line = line.strip()
-                # Skip lines that look like descriptions or explanations
-                if (line.startswith('(') and line.endswith(')') and 
-                    ('SELECTED' in line or 'OPERATORS' in line or 'FIELDS' in line)):
-                    continue
-                # Skip empty lines and description lines
-                if line and not line.startswith('-') and not line.startswith('*'):
-                    alpha_lines.append(line)
-            
-            if alpha_lines:
-                template = ' '.join(alpha_lines)
-            
-            # Remove any "alpha_expression_here" placeholder text
-            template = template.replace('alpha_expression_here', '').strip()
-            
-            # Remove "plaintext" prefix and any following whitespace
-            if template.startswith('plaintext'):
-                template = template.replace('plaintext', '', 1).strip()
-                logger.info(f"🔧 REMOVED PLAINTEXT PREFIX: {template}")
-            
-            # Clean up any extra whitespace
-            template = ' '.join(template.split())
-            
-            logger.info(f"🔨 STEP 3 COMPLETE: Built template: {template}")
-            return template
-            
-        except Exception as e:
-            logger.error(f"❌ STEP 3 FAILED: {e}")
-            return ""
-    
-    def _validate_template_step(self, template: str, region: str, delay: int = None) -> Tuple[bool, str]:
-        """Step 4: Validate the built template"""
-        logger.info(f"✅ STEP 4: Validating template: {template}")
-        logger.info(f"📝 Template details: length={len(template)}, region={region}, delay={delay}")
-        
-        # If delay is None, use optimal delay
-        if delay is None:
-            delay = self.select_optimal_delay(region)
-            logger.info(f"🔧 DELAY SYNC: Using optimal delay {delay} for validation")
-        
-        # Get valid fields for validation
-        data_fields = self.get_data_fields_for_region(region, delay)
-        valid_fields = [field['id'] for field in data_fields] if data_fields else []
-        
-        # Fix vector field issues with region-specific fields
-        fixed_template = self._fix_vector_field_issues(template, region, delay)
-        
-        # Check if there are still incompatible operators with VECTOR fields
-        if self._has_incompatible_vector_operators(fixed_template, region, delay):
-            logger.warning(f"🚨 INCOMPATIBLE OPERATORS DETECTED: Sending back to Ollama for field replacement")
-            # Send back to Ollama for field replacement
-            fixed_template = self._ollama_field_replacement(fixed_template, region, delay)
-        
-        # Track this template
-        self._track_recent_template(fixed_template)
-        
-        logger.info(f"✅ STEP 4 COMPLETE: Template validated successfully")
-        logger.info(f"🔧 FIXED TEMPLATE: {fixed_template}")
-        return True, fixed_template
-    
-    def _create_gem_discovery_selection(self, data_fields: List[Dict], max_fields: int = 30) -> List[Dict]:
-        """Create a dynamic selection based on elite template discoveries and time"""
-        # Update field strategy before selection
-        self._update_field_strategy()
-        
-        # Get current strategy weights
-        weights = self.field_strategy_weights[self.field_strategy_mode]
-        
-        # Categorize fields by usage levels
+        # 50/50 CHANCE: Limited operators OR unlimited operators (same logic as data field substitution)
         use_unlimited_operators = random.choice([True, False])
         
         # Select operators based on the 50/50 chance
@@ -2516,17 +2106,7 @@ normalize(close) + rank(volume)
             pyramid_mult = field.get('pyramidMultiplier', 1.0)
             user_count = field.get('userCount', 0)
             alpha_count = field.get('alphaCount', 0)
-            field_type = field.get('type', 'REGULAR')
-            
-            # Add field type information with operator compatibility
-            if field_type == 'VECTOR':
-                field_type_info = "VECTOR (use Cross Sectional operators: normalize, quantile, rank, scale, winsorize, zscore, vec_avg, vec_sum, vec_max, vec_min)"
-            elif field_type == 'MATRIX':
-                field_type_info = "MATRIX (use Time Series operators: ts_rank, ts_delta, ts_mean, ts_std, ts_corr, ts_regression)"
-            else:
-                field_type_info = "REGULAR (use standard operators)"
-            
-            fields_desc.append(f"- {field['id']}: {field.get('description', 'No description')} [{field_type_info}] (pyramid: {pyramid_mult}, users: {user_count}, alphas: {alpha_count})")
+            fields_desc.append(f"- {field['id']}: {field.get('description', 'No description')} (pyramid: {pyramid_mult}, users: {user_count}, alphas: {alpha_count})")
         
         # Get real examples from submitted alphas for better reference
         real_examples = self._get_real_alpha_examples()
@@ -2534,9 +2114,6 @@ normalize(close) + rank(volume)
         # Get blacklisted operators for the template
         blacklisted_operators = self.load_operator_blacklist()
         blacklist = f"🚫 BLACKLISTED OPERATORS - DO NOT USE THESE:\n{chr(10).join([f'- {op} (BLACKLISTED - DO NOT USE)' for op in blacklisted_operators])}" if blacklisted_operators else "🚫 BLACKLISTED OPERATORS: No operators currently blacklisted"
-        
-        # Get recent templates warning
-        recent_warning = self._get_recent_templates_warning()
         
         # 50/50 CHANCE: Unorthodox/Innovative vs Economic Significance focus
         focus_innovative = random.choice([True, False])
@@ -2601,35 +2178,12 @@ OPERATOR ARSENAL - USE ONLY THESE WEAPONS:
 
 ⚠️ ABSOLUTELY FORBIDDEN: Do NOT use any of the blacklisted operators above!
 
-{recent_warning}
-
 DATA FIELD ARSENAL - USE THESE EXACT FIELDS:
 {chr(10).join(fields_desc)}
-
-{recent_warning}
-
-🔍 FIELD TYPE COMPATIBILITY GUIDE:
-- VECTOR fields: Cross-sectional data (analyst estimates, etc.) → Use Cross Sectional operators: normalize, quantile, rank, scale, winsorize, zscore
-- MATRIX fields: Time series data (price, volume, etc.) → Use Time Series operators: ts_rank, ts_delta, ts_mean, ts_std, ts_corr, ts_regression, vec_avg, vec_sum, vec_max, vec_min
-- REGULAR fields: Standard data fields → Use standard operators
 
 🚨 CRITICAL: Use the EXACT field names from the list above. NEVER use generic placeholders like "field", "field1", "field2", "DATA_FIELD1", etc.
 🚨 FORBIDDEN: "field", "field1", "field2", "DATA_FIELD1", "DATA_FIELD2", "field_name", "data_field"
 ✅ REQUIRED: Use actual field names like "anl10_cpxff", "mdl23_bk_rev_stabil", "close", "volume", etc.
-⚠️ CRITICAL: Check field type in brackets [VECTOR/MATRIX/REGULAR] and use appropriate operators!
-
-📋 FIELD TYPE USAGE EXAMPLES:
-- VECTOR field example: normalize(anl4_guiafv4_est) ✅
-- MATRIX field example: ts_rank(anl10_bpsff, 20) ✅
-- REGULAR field example: ts_rank(close, 20) ✅
-- WRONG: ts_rank(anl4_guiafv4_est, 20) ❌ (VECTOR field with time series operator)
-- WRONG: normalize(close) ❌ (REGULAR field with cross-sectional operator)
-
-🔄 SMART FIELD REPLACEMENT:
-- If you want to use time series operators (ts_rank, ts_delta, ts_mean), use MATRIX fields instead of VECTOR fields
-- If you want to use cross-sectional operators (normalize, quantile, rank), use VECTOR fields
-- The system will automatically suggest compatible field replacements
-- Be creative: combine VECTOR and MATRIX fields in innovative ways!
 
 REAL WORLDQUANT BRAIN EXAMPLES FOR REFERENCE:
 {real_examples}
@@ -2665,11 +2219,9 @@ RULE #3: GROUP OPERATOR PARAMETERS - EXACT SPECIFICATION REQUIRED:
 NEVER use generic "group" - always specify: industry, subindustry, sector, market
 
 RULE #4: VECTOR FIELD HANDLING - CRITICAL:
-- VECTOR fields are cross-sectional data - use Cross Sectional operators directly: normalize(field), quantile(field), rank(field), scale(field), winsorize(field), zscore(field)
-- VECTOR fields can use Vector operators: vec_avg(field), vec_sum(field), vec_max(field), vec_min(field)
-- Time series operators (ts_rank, ts_delta, ts_mean) CANNOT process VECTOR fields directly
-- CORRECT for VECTOR fields: normalize(field), quantile(field), rank(field), scale(field), winsorize(field), zscore(field)
-- WRONG for VECTOR fields: ts_rank(field, 20), ts_delta(field, 5), ts_mean(field, 10)
+- Vector fields need vec_avg() wrapper: ts_rank(vec_avg(field), 20) CORRECT
+- rank() takes EXACTLY 1 input: rank(field) CORRECT or rank(vec_avg(field)) CORRECT replace field with ACTUAL DATA FIELD ARSENAL!
+- WRONG: rank(field1, field2) WRONG  replace field with ACTUAL DATA FIELD ARSENAL!
 
 ALPHA GENERATION STRATEGY - MAXIMUM PROFIT POTENTIAL:
 
@@ -2696,17 +2248,7 @@ ALPHA GENERATION STRATEGY - MAXIMUM PROFIT POTENTIAL:
    - group_rank(field, market) CORRECT   replace field with ACTUAL data_field!
    - YOUR IMAGINATION IS THE ONLY LIMIT
 
-5. VECTOR FIELD STRATEGIES (Cross-sectional data):
-   - normalize(field) - Cross-sectional normalization  replace field with ACTUAL VECTOR data_field!
-   - quantile(field, driver=gaussian, sigma=1.0) - Quantile transformation  replace field with ACTUAL VECTOR data_field!
-   - rank(field, rate=2) - Cross-sectional ranking  replace field with ACTUAL VECTOR data_field!
-   - scale(field, scale=1, longscale=1, shortscale=1) - Risk scaling  replace field with ACTUAL VECTOR data_field!
-   - winsorize(field, std=4) - Outlier management  replace field with ACTUAL VECTOR data_field!
-   - zscore(field) - Z-score normalization  replace field with ACTUAL VECTOR data_field!
-   - vec_avg(field) - Vector averaging  replace field with ACTUAL VECTOR data_field!
-   - vec_sum(field) - Vector summation  replace field with ACTUAL VECTOR data_field!
-
-6. SOPHISTICATED COMBINATIONS (Maximum alpha):
+5. SOPHISTICATED COMBINATIONS (Maximum alpha):
    - ts_rank(group_neutralize(ts_delta(field, 5), industry), 20)
    - ts_corr(ts_rank(field1, 20), ts_rank(field2, 20), 60)
    - YOUR IMAGINATION IS THE ONLY LIMIT
@@ -2750,33 +2292,6 @@ SUCCESS VALIDATION CHECKLIST:
 - Group operators use correct group types (industry, sector, subindustry, market)
 - Vector fields properly wrapped with vec_avg() when needed
 
-🧠 BRUCE LEE PHILOSOPHY - "BE LIKE WATER":
-- Forget what you've learned - be fluid and adaptive
-- Learn the rules, then transcend them through innovation
-- Don't just follow patterns - CREATE new patterns
-- Think beyond conventional combinations: a + b, a - b, a * b, a / b
-- The combinations are ENDLESS - explore the infinite possibilities
-- Be like water - adapt to any field type, any operator combination
-- Sometimes the most powerful alphas come from unexpected combinations
-- Innovation happens when you break free from rigid thinking
-
-🚀 INNOVATION CHALLENGE:
-- Can you create a + b combinations that no one has thought of?
-- Can you find hidden relationships between seemingly unrelated fields?
-- Can you discover new mathematical relationships that generate alpha?
-- Can you combine operators in ways that surprise even the creators?
-- Can you find the "impossible" combinations that actually work?
-
-💡 CREATIVE THINKING PROMPTS:
-- What if you combined VECTOR and MATRIX fields in unexpected ways?
-- What if you used arithmetic operators (add, subtract, multiply, divide) with Cross Sectional operators?
-- What if you nested 3, 4, or even 5 operators deep?
-- What if you used power(), sqrt(), log(), exp() with field combinations?
-- What if you created ratios, differences, and products of different field types?
-- What if you used group operators with VECTOR fields in new ways?
-- What if you combined time series and cross-sectional thinking?
-- The possibilities are INFINITE - be like water and flow with creativity!
-
 FINAL REQUIREMENTS:
 1. Use ONLY the provided operators and fields exactly as listed
 2. Focus on economic intuition and market significance
@@ -2785,7 +2300,6 @@ FINAL REQUIREMENTS:
 5. Ensure perfect syntax and balanced parentheses
 6. Generate {num_templates} diverse, profitable alpha expressions
 7. Each template must be immediately usable in WorldQuant Brain
-8. BE LIKE WATER - fluid, adaptive, and endlessly innovative!
 
 RESPONSE FORMAT - JSON ONLY:
 {{"templates": ["template1", "template2", "template3"]}}
@@ -2849,35 +2363,7 @@ Each template should be a UNIQUE, INNOVATIVE alpha expression that:
 - Shows willingness to take calculated risks in expression design
 - Avoids boring, predictable patterns that everyone uses
 
-🧠 BRUCE LEE PHILOSOPHY - "BE LIKE WATER":
-- Forget what you've learned - be fluid and adaptive
-- Learn the rules, then transcend them through innovation
-- Don't just follow patterns - CREATE new patterns
-- Think beyond conventional combinations: a + b, a - b, a * b, a / b
-- The combinations are ENDLESS - explore the infinite possibilities
-- Be like water - adapt to any field type, any operator combination
-- Sometimes the most powerful alphas come from unexpected combinations
-- Innovation happens when you break free from rigid thinking
-
-🚀 INNOVATION CHALLENGE:
-- Can you create a + b combinations that no one has thought of?
-- Can you find hidden relationships between seemingly unrelated fields?
-- Can you discover new mathematical relationships that generate alpha?
-- Can you combine operators in ways that surprise even the creators?
-- Can you find the "impossible" combinations that actually work?
-
-💡 CREATIVE THINKING PROMPTS:
-- What if you combined VECTOR and MATRIX fields in unexpected ways?
-- What if you used arithmetic operators (add, subtract, multiply, divide) with Cross Sectional operators?
-- What if you nested 3, 4, or even 5 operators deep?
-- What if you used power(), sqrt(), log(), exp() with field combinations?
-- What if you created ratios, differences, and products of different field types?
-- What if you used group operators with VECTOR fields in new ways?
-- What if you combined time series and cross-sectional thinking?
-- The possibilities are INFINITE - be like water and flow with creativity!
-
 Remember: You are not here to be safe and conventional. You are here to REVOLUTIONIZE quantitative finance with your creativity!
-Be like water - fluid, adaptive, and endlessly innovative!
 
 Return JSON format: {{"templates": ["template1", "template2", "template3"]}}
 """
@@ -3561,37 +3047,6 @@ Return JSON format: {{"templates": ["template1", "template2", "template3"]}}
             self.operator_blacklist_reasons = {}
             self.successful_simulations_since_blacklist = 0
     
-    def _load_blacklist_from_disk(self):
-        """Load operator blacklist from disk"""
-        try:
-            if os.path.exists(self.blacklist_file):
-                with open(self.blacklist_file, "r") as f:
-                    data = json.load(f)
-                
-                # Load blacklisted operators
-                self.operator_blacklist = set(data.get("blacklisted_operators", []))
-                self.operator_usage_count = data.get("usage_count", {})
-                self.operator_blacklist_timestamps = data.get("blacklist_timestamps", {})
-                self.operator_blacklist_reasons = data.get("blacklist_reasons", {})
-                self.successful_simulations_since_blacklist = data.get("successful_simulations", 0)
-                
-                logger.info(f"📁 LOADED BLACKLIST: {len(self.operator_blacklist)} operators blacklisted")
-                if self.operator_blacklist:
-                    logger.info(f"🚫 BLACKLISTED OPERATORS: {list(self.operator_blacklist)}")
-            else:
-                logger.info(f"📁 NO BLACKLIST FILE: Starting with empty blacklist")
-                self.operator_blacklist = set()
-                self.operator_blacklist_timestamps = {}
-                self.operator_blacklist_reasons = {}
-                self.successful_simulations_since_blacklist = 0
-        except Exception as e:
-            logger.error(f"Failed to load blacklist from disk: {e}")
-            # Initialize empty blacklist on error
-            self.operator_blacklist = set()
-            self.operator_blacklist_timestamps = {}
-            self.operator_blacklist_reasons = {}
-            self.successful_simulations_since_blacklist = 0
-    
     def _save_blacklist_to_disk(self):
         """Save blacklist to disk for persistence"""
         try:
@@ -3822,380 +3277,109 @@ Return JSON format: {{"templates": ["template1", "template2", "template3"]}}
             self._save_operator_compatibility()
     
     def _validate_ollama_template(self, template: str) -> Tuple[bool, str]:
+        """Enhanced validation for Ollama-generated templates, returns (is_valid, fixed_template)"""
+        # Check for forbidden operators
+        # comparison_ops = ['>', '<', '>=', '<=', '==', '!=', '&&', '||', '%']
+        # if any(op in template for op in comparison_ops):
+        #     return False
+        
+        # # Check for balanced parentheses
+        # if template.count('(') != template.count(')'):
+        #     return False
+        
+        # # Check for proper operator syntax
+        # if not re.search(r'^[a-zA-Z_][a-zA-Z0-9_]*\(', template):
+        #     return False
+        
+        # # Check for reasonable complexity (not too simple, not too complex)
+        # if len(template) < 10 or len(template) > 200:
+        #     return False
+        
+        # Fix invalid group parameters in neutralization operators by replacing with random valid ones
+        group_operators = ['group_neutralize', 'group_neutralize', 'group_zscore', 'group_rank']
+        valid_groups = ['industry', 'subindustry', 'sector', 'market']
+        
+        for op in group_operators:
+            if op in template:
+                # Check if the operator is followed by a valid group parameter
+                pattern = rf'{op}\s*\([^,]+,\s*([^)]+)\)'
+                match = re.search(pattern, template)
+                if match:
+                    group_param = match.group(1).strip()
+                    if group_param not in valid_groups:
+                        # Replace invalid group parameter with random valid one
+                        random_group = random.choice(valid_groups)
+                        # Simple string replacement
+                        old_text = f'{op}({match.group(0).split("(")[1].split(",")[0]}, {group_param})'
+                        new_text = f'{op}({match.group(0).split("(")[1].split(",")[0]}, {random_group})'
+                        template = template.replace(old_text, new_text)
+                        logger.info(f"🔧 Fixed invalid group parameter '{group_param}' -> '{random_group}' in {op} operator")
+        
+        # # Check for realistic field names (more flexible validation)
+        # # Look for common field patterns in WorldQuant Brain
+        # field_patterns = [
+        #     r'\b(close|open|high|low|volume|returns|market_cap|book_value|earnings|sales|cash|industry|sector|country)\b',
+        #     r'\b(mdl\d+_\w+)\b',  # Model fields like mdl23_bk_entrpris_valu
+        #     r'\b(fnd\d+_\w+)\b',  # Fundamental fields
+        #     r'\b(analyst\d+_\w+)\b',  # Analyst fields
+        #     r'\b(news\d+_\w+)\b',  # News fields
+        #     r'\b(alt\d+_\w+)\b',  # Alternative data fields
+        #     r'\b(adv\d+)\b',  # Average daily volume
+        #     r'\b(vwap|rsi|macd|bollinger_\w+)\b'  # Technical indicators
+        # ]
+        
+        # has_realistic_field = False
+        # for pattern in field_patterns:
+        #     if re.search(pattern, template):
+        #         has_realistic_field = True
+        #         break
+        
+        # if not has_realistic_field:
+        #     return False
+        
+        # CRITICAL: Check for data fields being used as operators
+        known_operators = {
+            'ts_rank', 'ts_max', 'ts_min', 'ts_sum', 'ts_mean', 'ts_std_dev', 'ts_skewness', 'ts_kurtosis',
+            'ts_corr', 'ts_regression', 'ts_delta', 'ts_ratio', 'ts_product', 'ts_scale', 'ts_zscore',
+            'ts_lag', 'ts_lead', 'ts_arg_max', 'ts_arg_min', 'rank', 'add', 'subtract', 'multiply', 'divide',
+            'power', 'abs', 'sign', 'sqrt', 'log', 'exp', 'max', 'min', 'sum', 'mean', 'std', 'std_dev',
+            'corr', 'regression', 'delta', 'ratio', 'product', 'scale', 'zscore', 'lag', 'lead',
+            'group_neutralize', 'group_neutralize', 'group_zscore', 'group_rank', 'group_max', 'group_min',
+            'group_sum', 'group_mean', 'group_std', 'group_scale', 'group_backfill', 'group_forward_fill',
+            'vec_avg', 'vec_sum', 'vec_max', 'vec_min', 'vec_std', 'vec_rank', 'vec_scale',
+            'if_else', 'greater', 'less', 'greater_equal', 'less_equal', 'equal', 'not_equal',
+            'and', 'or', 'not', 'is_nan', 'is_finite', 'is_infinite', 'fill_na', 'forward_fill',
+            'backward_fill', 'clip', 'clip_lower', 'clip_upper', 'signed_power', 'inverse', 'inverse_sqrt',
+            'bucket', 'step', 'hump', 'days_from_last_change', 'ts_step', 'ts_bucket', 'ts_hump'
+        }
+        
+        # Pattern to find function calls: word(...
+        function_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\('
+        matches = re.finditer(function_pattern, template)
+        
+        data_fields_as_operators = []
+        for match in matches:
+            function_name = match.group(1)
+            # If it's not a known operator, it's likely a data field being used as operator
+            if function_name not in known_operators:
+                data_fields_as_operators.append(function_name)
+        
+        # NO REJECTION - Let the simulation handle any issues
+        if data_fields_as_operators:
+            logger.warning(f"⚠️ Data fields used as operators detected: {data_fields_as_operators}")
+            logger.warning(f"   Template: {template}")
+            logger.warning(f"   Proceeding to simulation - let WorldQuant Brain handle validation")
+        
+        # Fix vector field issues by converting to matrix format
+        template = self._fix_vector_field_issues(template)
+        
         return True, template
     
-    def _fix_vector_field_issues(self, template: str, region: str = None, delay: int = None) -> str:
-        """Use YES/NO decision for field replacement to avoid hallucination"""
-        import re
-        
-        # Get available MATRIX/REGULAR fields from the SPECIFIC region cache, sorted by usage
-        available_fields = []
-        
-        if region and delay is not None:
-            # Use the specific region and delay
-            cache_file = f"data_fields_cache_{region}_{delay}.json"
-            if os.path.exists(cache_file):
-                try:
-                    with open(cache_file, 'r') as f:
-                        fields_data = json.load(f)
-                        for field in fields_data:
-                            if field.get('type') in ['REGULAR', 'MATRIX']:  # Only non-VECTOR fields
-                                available_fields.append(field)
-                    
-                    # Sort by usage (lowest usage first) - prioritize underused fields
-                    def get_usage_score(field):
-                        user_count = field.get('userCount', 0)
-                        alpha_count = field.get('alphaCount', 0)
-                        return user_count + alpha_count
-                    
-                    available_fields.sort(key=get_usage_score)
-                    logger.info(f"🔧 REGION-SPECIFIC FIX: Using {len(available_fields)} replacement fields from {region} delay={delay} (sorted by usage)")
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to load {region} cache: {e}")
-        else:
-            logger.warning(f"⚠️ No region/delay specified, skipping field replacement")
-            return template
-        
-        if not available_fields:
-            logger.warning(f"⚠️ No replacement fields available for {region}")
-            return template
-        
-        # Create prompt for Ollama to choose replacement fields
-        # Show first 20 underused MATRIX/REGULAR fields with usage info
-        replacement_options = []
-        for i, field in enumerate(available_fields[:20]):  # Show first 20 fields
-            user_count = field.get('userCount', 0)
-            alpha_count = field.get('alphaCount', 0)
-            field_type = field.get('type', 'REGULAR')
-            usage_info = f"users={user_count}, alphas={alpha_count}"
-            replacement_options.append(f"[{i}] {field['id']}: {field.get('description', 'No description')} [{field_type}] [{usage_info}]")
-        
-        prompt = f"""
-🔧 FIELD REPLACEMENT FOR {region.upper()}
-
-The template has VECTOR fields with incompatible operators:
-
-CURRENT TEMPLATE:
-{template}
-
-REPLACEMENT OPTIONS (sorted by usage - lowest usage first):
-{chr(10).join(replacement_options)}
-
-INSTRUCTIONS:
-- Choose 1-2 replacement fields by their INDEX NUMBERS (e.g., [0, 5])
-- PRIORITIZE LOW-USAGE FIELDS: Prefer fields with low userCount and alphaCount
-- Choose MATRIX fields for Time Series operators, REGULAR fields for standard operators
-- Return ONLY the index numbers in square brackets
-
-RESPONSE FORMAT:
-[0, 5]
-"""
-        
-        try:
-            import ollama
-            response = ollama.chat(
-                model=self.ollama_model,
-                messages=[{'role': 'user', 'content': prompt}],
-                options={'temperature': 0.3, 'top_p': 0.8}
-            )
-            
-            # Parse Ollama's response to get field indices
-            content = response['message']['content'].strip()
-            logger.info(f"🔧 OLLAMA REPLACEMENT SELECTION: {content}")
-            
-            # Extract indices from response (e.g., [0, 5] or 0, 5)
-            import re
-            indices = []
-            
-            # Try to find indices in square brackets
-            bracket_match = re.search(r'\[([0-9,\s]+)\]', content)
-            if bracket_match:
-                indices_str = bracket_match.group(1)
-                indices = [int(x.strip()) for x in indices_str.split(',') if x.strip().isdigit()]
-            else:
-                # Try to find individual numbers
-                numbers = re.findall(r'\b(\d+)\b', content)
-                indices = [int(x) for x in numbers if int(x) < len(available_fields[:20])]
-            
-            if indices:
-                logger.info(f"🔧 OLLAMA SELECTED INDICES: {indices}")
-                
-                # Get field types to identify VECTOR fields
-                field_types = {}
-                cache_file = f"data_fields_cache_{region}_{delay}.json"
-                if os.path.exists(cache_file):
-                    try:
-                        with open(cache_file, 'r') as f:
-                            fields_data = json.load(f)
-                            for field in fields_data:
-                                field_types[field['id']] = field.get('type', 'REGULAR')
-                    except:
-                        pass
-                
-                # Replace VECTOR fields with selected MATRIX/REGULAR fields
-                field_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b'
-                all_words = re.findall(field_pattern, template)
-                
-                replacement_count = 0
-                for word in all_words:
-                    if word in field_types and field_types[word] == 'VECTOR' and replacement_count < len(indices):
-                        replacement_field = available_fields[indices[replacement_count]]['id']
-                        template = template.replace(word, replacement_field)
-                        logger.info(f"🔧 SMART REPLACEMENT: {word} -> {replacement_field} (index {indices[replacement_count]})")
-                        replacement_count += 1
-                
-                if replacement_count == 0:
-                    logger.warning(f"⚠️ NO VECTOR FIELD FOUND FOR REPLACEMENT")
-            else:
-                logger.warning(f"⚠️ NO VALID INDICES FOUND: {content}, using original template")
-            
-        except Exception as e:
-            logger.error(f"❌ OLLAMA REPLACEMENT FAILED: {e}")
-            # Keep original template if Ollama fails
-        
+    def _fix_vector_field_issues(self, template: str) -> str:
+        """NO AUTOMATIC FIXES - Let Ollama decide how to handle vector fields"""
+        # The LLM should make intelligent decisions about vector field handling
+        # No automatic vec_avg conversion - let Ollama decide
         return template
-    
-    def _has_incompatible_vector_operators(self, template: str, region: str, delay: int) -> bool:
-        """Check if template has incompatible operators with VECTOR fields"""
-        import re
-        
-        # Get field types from the specific region cache
-        field_types = {}
-        cache_file = f"data_fields_cache_{region}_{delay}.json"
-        if os.path.exists(cache_file):
-            try:
-                with open(cache_file, 'r') as f:
-                    fields_data = json.load(f)
-                    for field in fields_data:
-                        field_types[field['id']] = field.get('type', 'REGULAR')
-            except:
-                return False
-        
-        # Extract all field references from template
-        field_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b'
-        all_words = re.findall(field_pattern, template)
-        
-        # Check for incompatible operators with VECTOR fields
-        incompatible_ops = ['normalize', 'quantile', 'rank', 'scale', 'winsorize', 'zscore']
-        event_indicators = ['event', 'sentiment', 'news', 'novelty', 'relevance', 'confidence']
-        
-        for word in all_words:
-            if word in field_types:
-                field_type = field_types[word]
-                if field_type == 'VECTOR':
-                    # Check for incompatible operators
-                    for op in incompatible_ops:
-                        if f"{op}(" in template and word in template:
-                            # Check if it's an event field
-                            is_event_field = any(indicator in word.lower() for indicator in event_indicators)
-                            if is_event_field:
-                                logger.warning(f"🚨 INCOMPATIBLE: {op}({word}) - event VECTOR field doesn't support {op}")
-                                return True
-        
-        return False
-    
-    def _ollama_field_replacement(self, template: str, region: str, delay: int) -> str:
-        """Send template back to Ollama for field replacement"""
-        # Get available fields from the specific region
-        cache_file = f"data_fields_cache_{region}_{delay}.json"
-        available_fields = []
-        if os.path.exists(cache_file):
-            try:
-                with open(cache_file, 'r') as f:
-                    fields_data = json.load(f)
-                    for field in fields_data:
-                        if field.get('type') in ['REGULAR', 'MATRIX']:  # Only non-VECTOR fields
-                            available_fields.append(field['id'])
-            except:
-                pass
-        
-        if not available_fields:
-            logger.warning(f"⚠️ No replacement fields available for {region}")
-            return template
-        
-        # Create indexed list of available fields
-        field_options = []
-        for i, field in enumerate(available_fields[:30]):  # Show first 30 fields
-            field_options.append(f"[{i}] {field}")
-        
-        # Create prompt for Ollama to decide if replacement is needed
-        prompt = f"""
-🔧 FIELD REPLACEMENT DECISION FOR {region.upper()}
-
-The template has VECTOR fields with incompatible operators:
-
-CURRENT TEMPLATE:
-{template}
-
-QUESTION: Does this template need field replacement?
-- YES: If there are VECTOR fields with incompatible operators (normalize, quantile, rank, scale, winsorize, zscore)
-- NO: If all fields are already compatible
-
-RESPONSE FORMAT: Answer with only "YES" or "NO"
-"""
-        
-        try:
-            import ollama
-            response = ollama.chat(
-                model=self.ollama_model,
-                messages=[{'role': 'user', 'content': prompt}],
-                options={'temperature': 0.3, 'top_p': 0.8}
-            )
-            
-            # Parse Ollama's response
-            content = response['message']['content'].strip().upper()
-            logger.info(f"🔧 OLLAMA REPLACEMENT DECISION: {content}")
-            
-            # Check if Ollama says YES or NO
-            if "YES" in content:
-                logger.info(f"🔧 OLLAMA SAYS YES - Replacement needed, performing automatic replacement")
-                # Perform automatic replacement using available fields
-                if available_fields:
-                    import re
-                    field_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b'
-                    all_words = re.findall(field_pattern, template)
-                    
-                    # Get field types to identify VECTOR fields
-                    field_types = {}
-                    cache_file = f"data_fields_cache_{region}_{delay}.json"
-                    if os.path.exists(cache_file):
-                        try:
-                            with open(cache_file, 'r') as f:
-                                fields_data = json.load(f)
-                                for field in fields_data:
-                                    field_types[field['id']] = field.get('type', 'REGULAR')
-                        except:
-                            pass
-                    
-                    # Replace first VECTOR field with first available MATRIX/REGULAR field
-                    for word in all_words:
-                        if word in field_types and field_types[word] == 'VECTOR':
-                            replacement_field = available_fields[0]
-                            content = template.replace(word, replacement_field)
-                            logger.info(f"🔧 AUTOMATIC REPLACEMENT: {word} -> {replacement_field}")
-                            break
-                    else:
-                        # No VECTOR field found, return original template
-                        content = template
-                        logger.warning(f"⚠️ NO VECTOR FIELD FOUND FOR REPLACEMENT")
-                else:
-                    content = template
-                    logger.warning(f"⚠️ NO REPLACEMENT FIELDS AVAILABLE")
-            elif "NO" in content:
-                logger.info(f"🔧 OLLAMA SAYS NO - No replacement needed, using original template")
-                content = template
-            else:
-                logger.warning(f"⚠️ UNKNOWN RESPONSE: {content}, using original template")
-                content = template
-            
-            # Clean up the response
-            if '```' in content:
-                code_blocks = re.findall(r'```(?:sql|python|javascript)?\n?(.*?)\n?```', content, re.DOTALL)
-                if code_blocks:
-                    content = code_blocks[0].strip()
-                else:
-                    content = content.replace('```sql', '').replace('```python', '').replace('```javascript', '').replace('```', '').strip()
-            
-            # Remove any "plaintext" prefix
-            if content.startswith('plaintext'):
-                content = content.replace('plaintext', '', 1).strip()
-            
-            # Clean up extra whitespace
-            content = ' '.join(content.split())
-            
-            logger.info(f"🔧 OLLAMA REPLACEMENT RESULT: {content}")
-            return content
-            
-        except Exception as e:
-            logger.error(f"❌ OLLAMA FIELD REPLACEMENT FAILED: {e}")
-            return template
-    
-    def _get_compatible_operators_for_field_type(self, field_type: str) -> List[str]:
-        """Get compatible operators for a specific field type dynamically"""
-        compatible_ops = []
-        
-        for op in self.operators:
-            op_scope = op.get('scope', [])
-            op_category = op.get('category', '')
-            
-            is_compatible = False
-            
-            if field_type == 'VECTOR':
-                # VECTOR fields: Allow all operators, but replace field if incompatible
-                is_compatible = True
-            elif field_type == 'MATRIX':
-                # MATRIX fields: Use Time Series operators and Vector operators
-                if op_category == 'Time Series' or op_category == 'Vector':
-                    is_compatible = True
-            elif field_type == 'REGULAR':
-                # REGULAR fields: Use all operators
-                if op_category in ['Arithmetic', 'Logical', 'Time Series', 'Cross Sectional', 'Vector', 'Transformational', 'Group']:
-                    is_compatible = True
-            
-            if is_compatible and op['name'] not in self.operator_blacklist:
-                compatible_ops.append(op['name'])
-        
-        return compatible_ops
-
-    def _get_field_type(self, field_id: str) -> str:
-        """Get field type from data fields cache"""
-        for region in ['USA', 'GLB', 'EUR', 'ASI', 'CHN']:
-            try:
-                cache_file = f"data_fields_cache_{region}_0.json"
-                if os.path.exists(cache_file):
-                    with open(cache_file, 'r') as f:
-                        fields_data = json.load(f)
-                        for field in fields_data:
-                            if field['id'] == field_id:
-                                return field.get('type', 'REGULAR')
-            except:
-                continue
-        return 'REGULAR'  # Default to REGULAR if not found
-    
-    def _get_matrix_field_suggestions(self, vector_field_id: str) -> List[str]:
-        """Get MATRIX field suggestions for replacing VECTOR fields"""
-        matrix_fields = []
-        vector_prefix = vector_field_id.split('_')[0]  # Get prefix like 'anl4', 'anl10', etc.
-        
-        for region in ['USA', 'GLB', 'EUR', 'ASI', 'CHN']:
-            try:
-                cache_file = f"data_fields_cache_{region}_0.json"
-                if os.path.exists(cache_file):
-                    with open(cache_file, 'r') as f:
-                        fields_data = json.load(f)
-                        for field in fields_data:
-                            if field.get('type') == 'MATRIX':
-                                # Prefer fields with similar prefix or from same category
-                                if vector_prefix in field['id'] or field['id'].split('_')[0] in vector_prefix:
-                                    matrix_fields.append(field['id'])
-                                elif len(matrix_fields) < 10:  # Keep some general MATRIX fields as backup
-                                    matrix_fields.append(field['id'])
-            except:
-                continue
-        
-        return matrix_fields[:5]  # Return top 5 suggestions
-    
-    def _track_recent_template(self, template: str):
-        """Track recently generated template to avoid repetition"""
-        self.recent_templates.append(template)
-        if len(self.recent_templates) > self.max_recent_templates:
-            self.recent_templates.pop(0)  # Remove oldest template
-    
-    def _get_recent_templates_warning(self) -> str:
-        """Get warning about recent templates to avoid repetition"""
-        if not self.recent_templates:
-            return ""
-        
-        recent_count = min(5, len(self.recent_templates))
-        recent_examples = self.recent_templates[-recent_count:]
-        
-        warning = f"""
-🚫 AVOID THESE RECENTLY GENERATED PATTERNS:
-{chr(10).join([f"- {template}" for template in recent_examples])}
-
-🎯 GENERATE SOMETHING DIFFERENT: Create unique, innovative templates that don't repeat these patterns!
-"""
-        return warning
     
     def _learn_from_simulation_failure(self, template: str, error_message: str):
         """Learn from simulation failures and update operator compatibility"""
@@ -4288,66 +3472,100 @@ RESPONSE FORMAT: Answer with only "YES" or "NO"
             self._learn_operator_success(operator_name, template)
     
     def _validate_and_fix_template_fields(self, template: str, region: str, delay: int = None) -> str:
-        """Simple field validation - just return template as-is"""
-        logger.info(f"🔧 FIELD VALIDATION: Using template as-is for {region}")
+        """Validate and fix template fields to match region, universe, and delay settings"""
+        import re
+        
+        # Get the correct data fields for this region and delay
+        config = self.region_configs[region]
+        if delay is None:
+            delay = self.select_optimal_delay(region)
+        data_fields = self.get_data_fields_for_region(region, delay)
+        
+        if not data_fields:
+            logger.warning(f"⚠️ No data fields found for region {region} delay={delay}, using template as-is")
+            return template
+        
+        # Log field validation details
+        field_ids = [field['id'] for field in data_fields]
+        logger.info(f"🔧 FIELD VALIDATION: Using {len(field_ids)} fields for {region} delay={delay}")
+        logger.info(f"🔧 FIELD VALIDATION: Sample fields: {field_ids[:5]}")
+        
+        # Create a mapping of field names to their properties
+        field_map = {field['id']: field for field in data_fields}
+        valid_field_ids = set(field['id'] for field in data_fields)
+        
+        # Extract all field references from template, EXCLUDING operators
+        field_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b'
+        all_words = re.findall(field_pattern, template)
+        
+        # COMPREHENSIVE operator exclusion - DO NOT treat these as fields
+        operators_to_exclude = {
+            # Time series operators
+            'ts_rank', 'ts_max', 'ts_min', 'ts_sum', 'ts_mean', 'ts_std_dev', 'ts_skewness', 'ts_kurtosis',
+            'ts_corr', 'ts_regression', 'ts_delta', 'ts_ratio', 'ts_product', 'ts_scale', 'ts_zscore',
+            'ts_lag', 'ts_lead', 'ts_arg_max', 'ts_arg_min', 'ts_step', 'ts_bucket', 'ts_hump',
+            # Basic operators
+            'rank', 'add', 'subtract', 'multiply', 'divide', 'power', 'abs', 'sign', 'sqrt', 'log', 'exp',
+            'max', 'min', 'sum', 'mean', 'std', 'std_dev', 'corr', 'regression', 'delta', 'ratio', 'product', 'scale', 'zscore', 'lag', 'lead',
+            # Group operators
+            'group_neutralize', 'group_neutralize', 'group_zscore', 'group_rank', 'group_max', 'group_min',
+            'group_sum', 'group_mean', 'group_std', 'group_scale', 'group_backfill', 'group_forward_fill',
+            # Vector operators
+            'vec_avg', 'vec_sum', 'vec_max', 'vec_min', 'vec_std', 'vec_rank', 'vec_scale',
+            # Conditional operators
+            'if_else', 'greater', 'less', 'greater_equal', 'less_equal', 'equal', 'not_equal',
+            'and', 'or', 'not', 'is_nan', 'is_finite', 'is_infinite', 'fill_na', 'forward_fill',
+            'backward_fill', 'clip', 'clip_lower', 'clip_upper', 'signed_power', 'inverse', 'inverse_sqrt',
+            # Utility operators
+            'bucket', 'step', 'hump', 'days_from_last_change', 'winsorize',
+            # Group types
+            'industry', 'subindustry', 'sector', 'market',
+            # Common fields (don't validate these as they're always valid)
+            'close', 'volume', 'returns'
+        }
+        
+        # Only validate words that are NOT operators
+        template_fields = [word for word in all_words if word not in operators_to_exclude]
+        
+        # FIRST: Fix field name modifications (suffixes, prefixes, etc.)
+        template = self._fix_field_name_modifications(template, list(valid_field_ids))
+        
+        # Track changes made
+        changes_made = []
+        
+        for field_name in template_fields:
+            if field_name in valid_field_ids:
+                # Field exists and is valid for this region
+                field_info = field_map[field_name]
+                
+                # Field is valid - let Ollama decide how to handle VECTOR fields
+                # No automatic conversion - let the LLM make intelligent decisions
+                
+                logger.info(f"✅ Field {field_name} is valid for region {region} (type: {field_info.get('type', 'UNKNOWN')})")
+                
+            else:
+                # Field doesn't exist for this region, replace with a valid one
+                # Find a similar field or use a common one
+                replacement_field = self._find_replacement_field(field_name, valid_field_ids, data_fields)
+                if replacement_field:
+                    template = template.replace(field_name, replacement_field)
+                    changes_made.append(f"Replaced invalid field {field_name} with {replacement_field}")
+                    logger.info(f"🔧 Replaced invalid field {field_name} with {replacement_field} for region {region}")
+                else:
+                    # Use a fallback field
+                    fallback_field = 'close'  # Most common field
+                    template = template.replace(field_name, fallback_field)
+                    changes_made.append(f"Replaced invalid field {field_name} with fallback {fallback_field}")
+                    logger.info(f"🔧 Replaced invalid field {field_name} with fallback {fallback_field} for region {region}")
+        
+        if changes_made:
+            logger.info(f"🔧 FIELD VALIDATION: Made {len(changes_made)} changes for region {region}:")
+            for change in changes_made:
+                logger.info(f"   - {change}")
+        else:
+            logger.info(f"✅ FIELD VALIDATION: All fields are valid for region {region}")
+        
         return template
-    
-    def _find_replacement_field(self, invalid_field: str, valid_fields: set, data_fields: list) -> Optional[str]:
-        """Find a suitable replacement field for an invalid field"""
-        # Simple stub - return None to disable field replacement
-        return None
-    
-    def _fix_unknown_variable_retry(self, template: str, error_message: str) -> str:
-        """Simple stub - return template as-is"""
-        return template
-        #     # Group types
-        #     'industry', 'subindustry', 'sector', 'market',
-        #     # Common fields (don't validate these as they're always valid)
-        #     'close', 'volume', 'returns'
-        # }
-        
-        # # Only validate words that are NOT operators
-        # template_fields = [word for word in all_words if word not in operators_to_exclude]
-        
-        # # FIRST: Fix field name modifications (suffixes, prefixes, etc.)
-        # template = self._fix_field_name_modifications(template, list(valid_field_ids))
-        
-        # # Track changes made
-        # changes_made = []
-        
-        # for field_name in template_fields:
-        #     if field_name in valid_field_ids:
-        #         # Field exists and is valid for this region
-        #         field_info = field_map[field_name]
-                
-        #         # Field is valid - let Ollama decide how to handle VECTOR fields
-        #         # No automatic conversion - let the LLM make intelligent decisions
-                
-        #         logger.info(f"✅ Field {field_name} is valid for region {region} (type: {field_info.get('type', 'UNKNOWN')})")
-                
-        #     else:
-        #         # Field doesn't exist for this region, replace with a valid one
-        #         # Find a similar field or use a common one
-        #         replacement_field = self._find_replacement_field(field_name, valid_field_ids, data_fields)
-        #         if replacement_field:
-        #             template = template.replace(field_name, replacement_field)
-        #             changes_made.append(f"Replaced invalid field {field_name} with {replacement_field}")
-        #             logger.info(f"🔧 Replaced invalid field {field_name} with {replacement_field} for region {region}")
-        #         else:
-        #             # Use a fallback field
-        #             fallback_field = 'close'  # Most common field
-        #             template = template.replace(field_name, fallback_field)
-        #             changes_made.append(f"Replaced invalid field {field_name} with fallback {fallback_field}")
-        #             logger.info(f"🔧 Replaced invalid field {field_name} with fallback {fallback_field} for region {region}")
-        
-        # if changes_made:
-        #     logger.info(f"🔧 FIELD VALIDATION: Made {len(changes_made)} changes for region {region}:")
-        #     for change in changes_made:
-        #         logger.info(f"   - {change}")
-        # else:
-        #     logger.info(f"✅ FIELD VALIDATION: All fields are valid for region {region}")
-        
-        # return template
     
     def _find_replacement_field(self, invalid_field: str, valid_fields: set, data_fields: list) -> Optional[str]:
         """Find a suitable replacement field for an invalid field"""
@@ -4852,26 +4070,6 @@ These are actual submitted alphas with real performance metrics. Use them as ins
             logger.warning(f"No data fields found for region {region}")
             return []
         
-        # Separate fields by type for better operator selection
-        vector_fields = [f for f in data_fields if f.get('type') == 'VECTOR']
-        matrix_fields = [f for f in data_fields if f.get('type') == 'MATRIX']
-        regular_fields = [f for f in data_fields if f.get('type') == 'REGULAR']
-        
-        logger.info(f"📊 Field type distribution: {len(vector_fields)} VECTOR, {len(matrix_fields)} MATRIX, {len(regular_fields)} REGULAR")
-        
-        # Create field type summary for Ollama
-        field_type_summary = f"""
-📊 FIELD TYPE DISTRIBUTION FOR {region}:
-- VECTOR fields: {len(vector_fields)} (Cross-sectional data - use Cross Sectional operators)
-- MATRIX fields: {len(matrix_fields)} (Time series data - use Time Series operators)  
-- REGULAR fields: {len(regular_fields)} (Standard data - use standard operators)
-
-🎯 OPERATOR SELECTION STRATEGY:
-- If VECTOR fields present: Prioritize Cross Sectional operators (normalize, quantile, rank, scale, winsorize, zscore, vec_avg, vec_sum, vec_max, vec_min)
-- If MATRIX fields present: Prioritize Time Series operators (ts_rank, ts_delta, ts_mean, ts_std, ts_corr, ts_regression)
-- Always check field type in brackets [VECTOR/MATRIX/REGULAR] before selecting operators!
-"""
-        
         # Create field name list for validation
         valid_fields = [field['id'] for field in data_fields]
         logger.info(f"Available fields for {region} (delay={optimal_delay}): {len(valid_fields)} fields")
@@ -4882,17 +4080,6 @@ These are actual submitted alphas with real performance metrics. Use them as ins
         
         # 50/50 CHANCE: Prioritized fields vs Random fields
         use_prioritized_fields = random.choice([True, False])
-        
-        # Smart operator selection based on field types
-        if vector_fields and len(vector_fields) > 0:
-            # Prioritize Cross Sectional and Vector operators for VECTOR fields
-            cross_sectional_ops = [op for op in self.operators if op['category'] == 'Cross Sectional']
-            vector_ops = [op for op in self.operators if op['name'].startswith('vec_')]
-            preferred_ops = cross_sectional_ops + vector_ops
-            logger.info(f"🎯 VECTOR fields detected: Prioritizing {len(cross_sectional_ops)} Cross Sectional + {len(vector_ops)} Vector operators")
-        else:
-            preferred_ops = self.operators
-            logger.info(f"📊 No VECTOR fields: Using all operators")
         
         # Generate random number of operators (1-6) or unlimited for higher margin chances
         # Special case: EUR region has no operator or field limits
@@ -4913,18 +4100,9 @@ These are actual submitted alphas with real performance metrics. Use them as ins
                 logger.info(f"🎲 UNLIMITED operators: Using ALL {len(selected_operators)} operators for template generation")
             else:
                 max_operators = random.randint(3, 6)
-                # Use underused operators to force diversity, but prioritize field-type appropriate operators
-                if vector_fields and len(vector_fields) > 0:
-                    # Mix preferred operators with underused ones
-                    preferred_count = min(3, len(preferred_ops))
-                    underused_count = max_operators - preferred_count
-                    selected_preferred = random.sample(preferred_ops, preferred_count) if preferred_count > 0 else []
-                    selected_underused = self.get_underused_operators(underused_count) if underused_count > 0 else []
-                    selected_operators = selected_preferred + selected_underused
-                    logger.info(f"🎯 SMART operators: Selected {len(selected_preferred)} field-appropriate + {len(selected_underused)} underused operators")
-                else:
-                    selected_operators = self.get_underused_operators(max_operators)
-                    logger.info(f"🎲 LIMITED operators: Selected {len(selected_operators)} underused operators (max: {max_operators}) for template generation")
+                # Use underused operators to force diversity
+                selected_operators = self.get_underused_operators(max_operators)
+                logger.info(f"🎲 LIMITED operators: Selected {len(selected_operators)} underused operators (max: {max_operators}) for template generation")
             
             if use_prioritized_fields:
                 selected_fields = self._prioritize_fields(data_fields)
@@ -4938,263 +4116,13 @@ These are actual submitted alphas with real performance metrics. Use them as ins
         for op in selected_operators:
             operators_desc.append(f"- {op['name']}: {op['description']} (Definition: {op['definition']})")
         
-        # Create fields description from selected fields
-        fields_desc = []
-        for field in selected_fields[:20]:  # Show first 20 selected fields
-            pyramid_mult = field.get('pyramidMultiplier', 1.0)
-            user_count = field.get('userCount', 0)
-            alpha_count = field.get('alphaCount', 0)
-            field_type = field.get('type', 'REGULAR')
-            
-            # Add field type information with operator compatibility
-            if field_type == 'VECTOR':
-                field_type_info = "VECTOR (use Cross Sectional operators: normalize, quantile, rank, scale, winsorize, zscore, vec_avg, vec_sum, vec_max, vec_min)"
-            elif field_type == 'MATRIX':
-                field_type_info = "MATRIX (use Time Series operators: ts_rank, ts_delta, ts_mean, ts_std, ts_corr, ts_regression)"
-            else:
-                field_type_info = "REGULAR (use standard operators)"
-            
-            fields_desc.append(f"- {field['id']}: {field.get('description', 'No description')} [{field_type_info}] (pyramid: {pyramid_mult}, users: {user_count}, alphas: {alpha_count})")
-        
-        # Add field type summary to prompt
-        prompt = f"""
-{field_type_summary}
-
-OPERATOR ARSENAL - USE ONLY THESE WEAPONS:
-{chr(10).join(operators_desc)}
-
-DATA FIELD ARSENAL - USE THESE EXACT FIELDS:
-{chr(10).join(fields_desc)}
-
-{recent_warning}
-
-🔍 FIELD TYPE COMPATIBILITY GUIDE:
-- VECTOR fields: Cross-sectional data (analyst estimates, etc.) → Use Cross Sectional operators: normalize, quantile, rank, scale, winsorize, zscore
-- MATRIX fields: Time series data (price, volume, etc.) → Use Time Series operators: ts_rank, ts_delta, ts_mean, ts_std, ts_corr, ts_regression, vec_avg, vec_sum, vec_max, vec_min
-- REGULAR fields: Standard data fields → Use standard operators
-
-🚨 CRITICAL: Use the EXACT field names from the list above. NEVER use generic placeholders like "field", "field1", "field2", "DATA_FIELD1", etc.
-🚨 FORBIDDEN: "field", "field1", "field2", "DATA_FIELD1", "DATA_FIELD2", "field_name", "data_field"
-✅ REQUIRED: Use actual field names like "anl10_cpxff", "mdl23_bk_rev_stabil", "close", "volume", etc.
-⚠️ CRITICAL: Check field type in brackets [VECTOR/MATRIX/REGULAR] and use appropriate operators!
-
-📋 FIELD TYPE USAGE EXAMPLES:
-- VECTOR field example: normalize(anl4_guiafv4_est) ✅
-- MATRIX field example: ts_rank(anl10_bpsff, 20) ✅
-- REGULAR field example: ts_rank(close, 20) ✅
-- WRONG: ts_rank(anl4_guiafv4_est, 20) ❌ (VECTOR field with time series operator)
-- WRONG: normalize(close) ❌ (REGULAR field with cross-sectional operator)
-
-🔄 SMART FIELD REPLACEMENT:
-- If you want to use time series operators (ts_rank, ts_delta, ts_mean), use MATRIX fields instead of VECTOR fields
-- If you want to use cross-sectional operators (normalize, quantile, rank), use VECTOR fields
-- The system will automatically suggest compatible field replacements
-- Be creative: combine VECTOR and MATRIX fields in innovative ways!
-
-REAL WORLDQUANT BRAIN EXAMPLES FOR REFERENCE:
-{real_examples}
-
-{complexity_constraints}
-
-ULTRA-CRITICAL SYNTAX RULES - ZERO TOLERANCE FOR ERRORS:
-
-RULE #1: DATA FIELDS ARE NEVER OPERATORS - THEY ARE INPUTS!
-ABSOLUTELY FORBIDDEN - DATA FIELDS AS OPERATORS:
-- anl69_best_bps_stddev(anl69_best_bps_stddev(...)) FORBIDDEN
-- mdl23_bk_dra(mdl23_bk_rev_stabil(...)) FORBIDDEN  
-- fn_amortization_of_intangible_assets_a(...) FORBIDDEN
-- ANY_DATA_FIELD_NAME(...) FORBIDDEN
-
-MANDATORY CORRECT SYNTAX - DATA FIELDS AS INPUTS:
-- ts_rank(DATA_FIELD1, 20) CORRECT
-- add(DATA_FIELD1, DATA_FIELD2) CORRECT
-- ts_corr(DATA_FIELD1, DATA_FIELD2, 20) CORRECT
-- operator(DATA_FIELD, parameters) CORRECT
-
-RULE #2: OPERATOR GRAMMAR - PERFECT SYNTAX REQUIRED:
-- operator(field, parameter) CORRECT
-- operator(field1, field2, parameter) CORRECT
-- NO comparison operators: >, <, >=, <=, ==, !=, &&, ||, % FORBIDDEN
-- NO missing commas between parameters FORBIDDEN
-- PERFECTLY balanced parentheses REQUIRED
-
-RULE #3: PARAMETER PRECISION:
-{chr(10).join(parameter_guidelines) if parameter_guidelines else "- All parameters must be positive integers or valid numbers"}
-
-ALPHA GENERATION STRATEGY - MAXIMUM PROFIT POTENTIAL:
-
-1. MOMENTUM STRATEGIES (High Sharpe potential):
-   - ts_rank(DATA_FIELD1, 20) - Price momentum
-   - ts_delta(DATA_FIELD1, 5) - Short-term momentum
-   - rank(DATA_FIELD1) - Cross-sectional momentum
-
-2. MEAN REVERSION STRATEGIES (Risk-adjusted returns):
-   - ts_zscore(DATA_FIELD1, 60) - Statistical mean reversion
-   - group_neutralize(DATA_FIELD1, industry) - Industry-relative mean reversion
-   - ts_ratio(DATA_FIELD1, DATA_FIELD2) - Ratio mean reversion
-
-3. VOLATILITY STRATEGIES (Risk management):
-   - ts_std_dev(DATA_FIELD1, 20) - Volatility measurement
-   - winsorize(DATA_FIELD1, 3) - Outlier management
-   - scale(DATA_FIELD1) - Risk scaling
-
-4. CROSS-SECTIONAL STRATEGIES (Alpha generation):
-   - group_neutralize(ts_rank(DATA_FIELD1, 20), industry) CORRECT
-   - group_zscore(DATA_FIELD1, sector) CORRECT
-   - group_rank(DATA_FIELD1, market) CORRECT
-
-5. SOPHISTICATED COMBINATIONS (Maximum alpha):
-   - ts_rank(group_neutralize(ts_delta(DATA_FIELD1, 5), industry), 20)
-   - group_neutralize(ts_zscore(DATA_FIELD1, 60), sector)
-   - ts_corr(ts_rank(DATA_FIELD1, 20), ts_rank(DATA_FIELD2, 20), 60)
-
-OPERATOR CONSTRAINTS - MANDATORY COMPLIANCE:
-You MUST use ONLY these operators: {', '.join([op['name'] for op in selected_operators])}
-Each template MUST use at least one of these operators.
-Description: {chr(10).join([op['description'] for op in selected_operators])}
-
-FIELD PLACEHOLDERS - EXACT USAGE REQUIRED, remember it's not the field name, it's the placeholder, not DATA_FIELD followed by a number! For example, for data field anl10_cpxff, DATA_FIELD1 is anl10_cpxff, not anl10_cpxff1!
-- DATA_FIELD1: Single-field operations (ts_rank, rank, ts_std_dev, etc.)
-- DATA_FIELD2: Two-field operations (add, subtract, multiply, divide, ts_corr, etc.)
-- DATA_FIELD3: Complex multi-field operations
-- DATA_FIELD4: Advanced combinations
-
-CRITICAL GROUP OPERATOR PARAMETERS:
-- group_neutralize(field, industry) CORRECT
-- group_neutralize(field, sector) CORRECT  
-- group_zscore(field, subindustry) CORRECT
-- group_rank(field, market) CORRECT
-NEVER use generic "group" - always specify: industry, subindustry, sector, market
-
-🚨 CRITICAL VECTOR FIELD HANDLING - ZERO TOLERANCE FOR ERRORS 🚨
-
-VECTOR fields are cross-sectional data and CANNOT use time series operators!
-
-❌ ABSOLUTELY FORBIDDEN - VECTOR fields with time series operators:
-- ts_rank(VECTOR_FIELD, 20) ❌
-- ts_delta(VECTOR_FIELD, 5) ❌  
-- ts_mean(VECTOR_FIELD, 10) ❌
-- ts_std(VECTOR_FIELD, 20) ❌
-- ts_corr(VECTOR_FIELD1, VECTOR_FIELD2, 60) ❌
-- ANY ts_* operator with VECTOR fields ❌
-
-✅ MANDATORY CORRECT USAGE - VECTOR fields with appropriate operators:
-- normalize(VECTOR_FIELD) ✅
-- quantile(VECTOR_FIELD, driver=gaussian, sigma=1.0) ✅
-- rank(VECTOR_FIELD, rate=2) ✅
-- scale(VECTOR_FIELD, scale=1, longscale=1, shortscale=1) ✅
-- winsorize(VECTOR_FIELD, std=4) ✅
-- zscore(VECTOR_FIELD) ✅
-- vec_avg(VECTOR_FIELD) ✅
-- vec_sum(VECTOR_FIELD) ✅
-- vec_max(VECTOR_FIELD) ✅
-- vec_min(VECTOR_FIELD) ✅
-
-🔍 FIELD TYPE IDENTIFICATION:
-- VECTOR fields: Cross-sectional data (analyst estimates, etc.)
-- MATRIX fields: Time series data (price, volume, etc.)
-- REGULAR fields: Standard data fields
-
-⚠️ CRITICAL RULE: Check field type before using operators!
-
-ADVANCED ALPHA PATTERNS - MAXIMUM ALPHA POTENTIAL:
-
-DO NOT ADD 1, 2 ,3 ,4 to the placeholder, it's not the field name, it's the placeholder, not DATA_FIELD followed by a number! For example, for data field anl10_cpxff, DATA_FIELD1 is anl10_cpxff, not anl10_cpxff1!
-
-1. MOMENTUM + NEUTRALIZATION (for REGULAR/MATRIX fields):
-   - group_neutralize(ts_rank(DATA_FIELD1, 20), industry)  # Only for REGULAR/MATRIX fields
-   - group_neutralize(ts_delta(DATA_FIELD1, 5), sector)    # Only for REGULAR/MATRIX fields
-
-2. MEAN REVERSION + CROSS-SECTIONAL (for REGULAR/MATRIX fields):
-   - group_zscore(ts_zscore(DATA_FIELD1, 60), subindustry)  # Only for REGULAR/MATRIX fields
-   - group_rank(ts_ratio(DATA_FIELD1, DATA_FIELD2), market)  # Only for REGULAR/MATRIX fields
-
-3. VOLATILITY + MOMENTUM (for REGULAR/MATRIX fields):
-   - ts_rank(ts_std(DATA_FIELD1, 20), 10)  # Only for REGULAR/MATRIX fields
-   - winsorize(ts_delta(DATA_FIELD1, 5), 3)  # Only for REGULAR/MATRIX fields
-
-4. VECTOR FIELD STRATEGIES (Cross-sectional data):
-   - normalize(DATA_FIELD1) - Cross-sectional normalization
-   - quantile(DATA_FIELD1, driver=gaussian, sigma=1.0) - Quantile transformation
-   - rank(DATA_FIELD1, rate=2) - Cross-sectional ranking
-   - scale(DATA_FIELD1, scale=1, longscale=1, shortscale=1) - Risk scaling
-   - winsorize(DATA_FIELD1, std=4) - Outlier management
-   - zscore(DATA_FIELD1) - Z-score normalization
-   - vec_avg(DATA_FIELD1) - Vector averaging
-   - vec_sum(DATA_FIELD1) - Vector summation
-
-5. SOPHISTICATED NESTED PATTERNS (for REGULAR/MATRIX fields):
-   - ts_rank(group_neutralize(ts_delta(DATA_FIELD1, 5), industry), 20)  # Only for REGULAR/MATRIX fields
-   - group_neutralize(ts_zscore(ts_rank(DATA_FIELD1, 20), 60), sector)  # Only for REGULAR/MATRIX fields
-   - ts_corr(ts_rank(DATA_FIELD1, 20), ts_rank(DATA_FIELD2, 20), 60)  # Only for REGULAR/MATRIX fields
-
-6. VECTOR FIELD COMBINATIONS (for VECTOR fields only):
-   - group_neutralize(normalize(DATA_FIELD1), industry)  # VECTOR field with group neutralization
-   - group_zscore(rank(DATA_FIELD1), sector)  # VECTOR field with group zscore
-   - group_rank(scale(DATA_FIELD1), market)  # VECTOR field with group rank
-
-7. INNOVATIVE COMBINATIONS - "BE LIKE WATER":
-   - add(normalize(DATA_FIELD1), ts_rank(DATA_FIELD2, 20))  # Cross-sectional + Time series
-   - subtract(quantile(DATA_FIELD1), ts_delta(DATA_FIELD2, 5))  # VECTOR + MATRIX innovation
-   - multiply(rank(DATA_FIELD1), vec_avg(DATA_FIELD2))  # Cross-sectional + Vector operations
-   - divide(scale(DATA_FIELD1), ts_mean(DATA_FIELD2, 10))  # Risk scaling + Time series
-   - power(normalize(DATA_FIELD1), 2)  # Squared cross-sectional signals
-   - sqrt(abs(subtract(DATA_FIELD1, DATA_FIELD2)))  # Distance-based alpha
-   - log(add(1, abs(DATA_FIELD1)))  # Log-transformed signals
-   - exp(divide(DATA_FIELD1, DATA_FIELD2))  # Exponential ratios
-   - The combinations are ENDLESS - be creative and innovative!
-
-SUCCESS VALIDATION CHECKLIST:
-- Perfect syntax with balanced parentheses
-- Correct operator parameter counts
-- NO comparison operators (>, <, >=, <=, ==, !=, &&, ||, %)
-- NO missing commas between parameters
-- Realistic field names and appropriate parameters
-- Data fields as INPUTS, not operators
-- Group operators use correct group types (industry, sector, subindustry, market)
-- Vector fields properly wrapped with vec_avg() when needed
-
-🧠 BRUCE LEE PHILOSOPHY - "BE LIKE WATER":
-- Forget what you've learned - be fluid and adaptive
-- Learn the rules, then transcend them through innovation
-- Don't just follow patterns - CREATE new patterns
-- Think beyond conventional combinations: a + b, a - b, a * b, a / b
-- The combinations are ENDLESS - explore the infinite possibilities
-- Be like water - adapt to any field type, any operator combination
-- Sometimes the most powerful alphas come from unexpected combinations
-- Innovation happens when you break free from rigid thinking
-
-🚀 INNOVATION CHALLENGE:
-- Can you create a + b combinations that no one has thought of?
-- Can you find hidden relationships between seemingly unrelated fields?
-- Can you discover new mathematical relationships that generate alpha?
-- Can you combine operators in ways that surprise even the creators?
-- Can you find the "impossible" combinations that actually work?
-
-💡 CREATIVE THINKING PROMPTS:
-- What if you combined VECTOR and MATRIX fields in unexpected ways?
-- What if you used arithmetic operators (add, subtract, multiply, divide) with Cross Sectional operators?
-- What if you nested 3, 4, or even 5 operators deep?
-- What if you used power(), sqrt(), log(), exp() with field combinations?
-- What if you created ratios, differences, and products of different field types?
-- What if you used group operators with VECTOR fields in new ways?
-- What if you combined time series and cross-sectional thinking?
-- The possibilities are INFINITE - be like water and flow with creativity!
-
-FINAL REQUIREMENTS:
-1. Use ONLY the provided operators and fields exactly as listed
-2. Focus on economic intuition and market significance
-3. Combine multiple operators for sophisticated strategies
-4. Use appropriate time periods and parameters
-5. Ensure perfect syntax and balanced parentheses
-6. Generate {num_templates} diverse, profitable alpha expressions
-7. Each template must be immediately usable in WorldQuant Brain
-8. BE LIKE WATER - fluid, adaptive, and endlessly innovative!
-
-RESPONSE FORMAT - JSON ONLY:
-{{"templates": ["template1", "template2", "template3"]}}
-
-Generate {num_templates} GROUNDBREAKING alpha expressions in JSON format:"""
+        # Use field placeholders instead of actual field names
+        fields_desc = [
+            "- DATA_FIELD1: First data field (use this for single-field operators)",
+            "- DATA_FIELD2: Second data field (use this for two-field operators like add, subtract, multiply, divide, ts_corr, ts_regression)",
+            "- DATA_FIELD3: Third data field (use this for additional combinations)",
+            "- DATA_FIELD4: Fourth data field (use this for complex multi-field operations)"
+        ]
         
         # Add parameter guidelines based on operator definitions
         parameter_guidelines = []
@@ -5217,9 +4145,6 @@ Generate {num_templates} GROUNDBREAKING alpha expressions in JSON format:"""
         # Get blacklisted operators for the template
         blacklisted_operators = self.load_operator_blacklist()
         blacklist = f"🚫 BLACKLISTED OPERATORS - DO NOT USE THESE:\n{chr(10).join([f'- {op} (BLACKLISTED - DO NOT USE)' for op in blacklisted_operators])}" if blacklisted_operators else "🚫 BLACKLISTED OPERATORS: No operators currently blacklisted"
-
-        # Get recent templates warning
-        recent_warning = self._get_recent_templates_warning()
 
         # Create region-specific prompt
         if region == "EUR":
@@ -5272,30 +4197,9 @@ OPERATOR ARSENAL - USE ONLY THESE WEAPONS:
 DATA FIELD ARSENAL - USE THESE EXACT PLACEHOLDERS:
 {chr(10).join(fields_desc)}
 
-{recent_warning}
-
-🔍 FIELD TYPE COMPATIBILITY GUIDE:
-- VECTOR fields: Cross-sectional data (analyst estimates, etc.) → Use Cross Sectional operators: normalize, quantile, rank, scale, winsorize, zscore
-- MATRIX fields: Time series data (price, volume, etc.) → Use Time Series operators: ts_rank, ts_delta, ts_mean, ts_std, ts_corr, ts_regression, vec_avg, vec_sum, vec_max, vec_min
-- REGULAR fields: Standard data fields → Use standard operators
-
 🚨 CRITICAL: Use the EXACT field names from the list above. NEVER use generic placeholders like "field", "field1", "field2", "DATA_FIELD1", etc.
 🚨 FORBIDDEN: "field", "field1", "field2", "DATA_FIELD1", "DATA_FIELD2", "field_name", "data_field"
 ✅ REQUIRED: Use actual field names like "anl10_cpxff", "mdl23_bk_rev_stabil", "close", "volume", etc.
-⚠️ CRITICAL: Check field type in brackets [VECTOR/MATRIX/REGULAR] and use appropriate operators!
-
-📋 FIELD TYPE USAGE EXAMPLES:
-- VECTOR field example: normalize(anl4_guiafv4_est) ✅
-- MATRIX field example: ts_rank(anl10_bpsff, 20) ✅
-- REGULAR field example: ts_rank(close, 20) ✅
-- WRONG: ts_rank(anl4_guiafv4_est, 20) ❌ (VECTOR field with time series operator)
-- WRONG: normalize(close) ❌ (REGULAR field with cross-sectional operator)
-
-🔄 SMART FIELD REPLACEMENT:
-- If you want to use time series operators (ts_rank, ts_delta, ts_mean), use MATRIX fields instead of VECTOR fields
-- If you want to use cross-sectional operators (normalize, quantile, rank), use VECTOR fields
-- The system will automatically suggest compatible field replacements
-- Be creative: combine VECTOR and MATRIX fields in innovative ways!
 
 REAL WORLDQUANT BRAIN EXAMPLES FOR REFERENCE:
 {real_examples}
@@ -5374,83 +4278,31 @@ CRITICAL GROUP OPERATOR PARAMETERS:
 - group_rank(field, market) CORRECT
 NEVER use generic "group" - always specify: industry, subindustry, sector, market
 
-🚨 CRITICAL VECTOR FIELD HANDLING - ZERO TOLERANCE FOR ERRORS 🚨
-
-VECTOR fields are cross-sectional data and CANNOT use time series operators!
-
-❌ ABSOLUTELY FORBIDDEN - VECTOR fields with time series operators:
-- ts_rank(VECTOR_FIELD, 20) ❌
-- ts_delta(VECTOR_FIELD, 5) ❌  
-- ts_mean(VECTOR_FIELD, 10) ❌
-- ts_std(VECTOR_FIELD, 20) ❌
-- ts_corr(VECTOR_FIELD1, VECTOR_FIELD2, 60) ❌
-- ANY ts_* operator with VECTOR fields ❌
-
-✅ MANDATORY CORRECT USAGE - VECTOR fields with appropriate operators:
-- normalize(VECTOR_FIELD) ✅
-- quantile(VECTOR_FIELD, driver=gaussian, sigma=1.0) ✅
-- rank(VECTOR_FIELD, rate=2) ✅
-- scale(VECTOR_FIELD, scale=1, longscale=1, shortscale=1) ✅
-- winsorize(VECTOR_FIELD, std=4) ✅
-- zscore(VECTOR_FIELD) ✅
-- vec_avg(VECTOR_FIELD) ✅
-- vec_sum(VECTOR_FIELD) ✅
-- vec_max(VECTOR_FIELD) ✅
-- vec_min(VECTOR_FIELD) ✅
-
-🔍 FIELD TYPE IDENTIFICATION:
-- VECTOR fields: Cross-sectional data (analyst estimates, etc.)
-- MATRIX fields: Time series data (price, volume, etc.)
-- REGULAR fields: Standard data fields
-
-⚠️ CRITICAL RULE: Check field type before using operators!
+VECTOR FIELD HANDLING:
+- Vector fields need vec_avg() wrapper: ts_rank(vec_avg(DATA_FIELD1), 20) CORRECT
+- rank() takes EXACTLY 1 input: rank(DATA_FIELD1) CORRECT or rank(vec_avg(DATA_FIELD1)) CORRECT
+- WRONG: rank(DATA_FIELD1, DATA_FIELD2) WRONG
 
 ADVANCED ALPHA PATTERNS - MAXIMUM ALPHA POTENTIAL:
 
 DO NOT ADD 1, 2 ,3 ,4 to the placeholder, it's not the field name, it's the placeholder, not DATA_FIELD followed by a number! For example, for data field anl10_cpxff, DATA_FIELD1 is anl10_cpxff, not anl10_cpxff1!
 
-1. MOMENTUM + NEUTRALIZATION (for REGULAR/MATRIX fields):
-   - group_neutralize(ts_rank(DATA_FIELD1, 20), industry)  # Only for REGULAR/MATRIX fields
-   - group_neutralize(ts_delta(DATA_FIELD1, 5), sector)    # Only for REGULAR/MATRIX fields
+1. MOMENTUM + NEUTRALIZATION:
+   - group_neutralize(ts_rank(DATA_FIELD1, 20), industry)
+   - group_neutralize(ts_delta(DATA_FIELD1, 5), sector)
 
-2. MEAN REVERSION + CROSS-SECTIONAL (for REGULAR/MATRIX fields):
-   - group_zscore(ts_zscore(DATA_FIELD1, 60), subindustry)  # Only for REGULAR/MATRIX fields
-   - group_rank(ts_ratio(DATA_FIELD1, DATA_FIELD2), market)  # Only for REGULAR/MATRIX fields
+2. MEAN REVERSION + CROSS-SECTIONAL:
+   - group_zscore(ts_zscore(DATA_FIELD1, 60), subindustry)
+   - group_rank(ts_ratio(DATA_FIELD1, DATA_FIELD2), market)
 
-3. VOLATILITY + MOMENTUM (for REGULAR/MATRIX fields):
-   - ts_rank(ts_std(DATA_FIELD1, 20), 10)  # Only for REGULAR/MATRIX fields
-   - winsorize(ts_delta(DATA_FIELD1, 5), 3)  # Only for REGULAR/MATRIX fields
+3. VOLATILITY + MOMENTUM:
+   - ts_rank(ts_std(DATA_FIELD1, 20), 10)
+   - winsorize(ts_delta(DATA_FIELD1, 5), 3)
 
-4. VECTOR FIELD STRATEGIES (Cross-sectional data):
-   - normalize(DATA_FIELD1) - Cross-sectional normalization
-   - quantile(DATA_FIELD1, driver=gaussian, sigma=1.0) - Quantile transformation
-   - rank(DATA_FIELD1, rate=2) - Cross-sectional ranking
-   - scale(DATA_FIELD1, scale=1, longscale=1, shortscale=1) - Risk scaling
-   - winsorize(DATA_FIELD1, std=4) - Outlier management
-   - zscore(DATA_FIELD1) - Z-score normalization
-   - vec_avg(DATA_FIELD1) - Vector averaging
-   - vec_sum(DATA_FIELD1) - Vector summation
-
-5. SOPHISTICATED NESTED PATTERNS (for REGULAR/MATRIX fields):
-   - ts_rank(group_neutralize(ts_delta(DATA_FIELD1, 5), industry), 20)  # Only for REGULAR/MATRIX fields
-   - group_neutralize(ts_zscore(ts_rank(DATA_FIELD1, 20), 60), sector)  # Only for REGULAR/MATRIX fields
-   - ts_corr(ts_rank(DATA_FIELD1, 20), ts_rank(DATA_FIELD2, 20), 60)  # Only for REGULAR/MATRIX fields
-
-6. VECTOR FIELD COMBINATIONS (for VECTOR fields only):
-   - group_neutralize(normalize(DATA_FIELD1), industry)  # VECTOR field with group neutralization
-   - group_zscore(rank(DATA_FIELD1), sector)  # VECTOR field with group zscore
-   - group_rank(scale(DATA_FIELD1), market)  # VECTOR field with group rank
-
-7. INNOVATIVE COMBINATIONS - "BE LIKE WATER":
-   - add(normalize(DATA_FIELD1), ts_rank(DATA_FIELD2, 20))  # Cross-sectional + Time series
-   - subtract(quantile(DATA_FIELD1), ts_delta(DATA_FIELD2, 5))  # VECTOR + MATRIX innovation
-   - multiply(rank(DATA_FIELD1), vec_avg(DATA_FIELD2))  # Cross-sectional + Vector operations
-   - divide(scale(DATA_FIELD1), ts_mean(DATA_FIELD2, 10))  # Risk scaling + Time series
-   - power(normalize(DATA_FIELD1), 2)  # Squared cross-sectional signals
-   - sqrt(abs(subtract(DATA_FIELD1, DATA_FIELD2)))  # Distance-based alpha
-   - log(add(1, abs(DATA_FIELD1)))  # Log-transformed signals
-   - exp(divide(DATA_FIELD1, DATA_FIELD2))  # Exponential ratios
-   - The combinations are ENDLESS - be creative and innovative!
+4. SOPHISTICATED NESTED PATTERNS:
+   - ts_rank(group_neutralize(ts_delta(DATA_FIELD1, 5), industry), 20)
+   - group_neutralize(ts_zscore(ts_rank(DATA_FIELD1, 20), 60), sector)
+   - ts_corr(ts_rank(DATA_FIELD1, 20), ts_rank(DATA_FIELD2, 20), 60)
 
 SUCCESS VALIDATION CHECKLIST:
 - Perfect syntax with balanced parentheses
@@ -5462,33 +4314,6 @@ SUCCESS VALIDATION CHECKLIST:
 - Group operators use correct group types (industry, sector, subindustry, market)
 - Vector fields properly wrapped with vec_avg() when needed
 
-🧠 BRUCE LEE PHILOSOPHY - "BE LIKE WATER":
-- Forget what you've learned - be fluid and adaptive
-- Learn the rules, then transcend them through innovation
-- Don't just follow patterns - CREATE new patterns
-- Think beyond conventional combinations: a + b, a - b, a * b, a / b
-- The combinations are ENDLESS - explore the infinite possibilities
-- Be like water - adapt to any field type, any operator combination
-- Sometimes the most powerful alphas come from unexpected combinations
-- Innovation happens when you break free from rigid thinking
-
-🚀 INNOVATION CHALLENGE:
-- Can you create a + b combinations that no one has thought of?
-- Can you find hidden relationships between seemingly unrelated fields?
-- Can you discover new mathematical relationships that generate alpha?
-- Can you combine operators in ways that surprise even the creators?
-- Can you find the "impossible" combinations that actually work?
-
-💡 CREATIVE THINKING PROMPTS:
-- What if you combined VECTOR and MATRIX fields in unexpected ways?
-- What if you used arithmetic operators (add, subtract, multiply, divide) with Cross Sectional operators?
-- What if you nested 3, 4, or even 5 operators deep?
-- What if you used power(), sqrt(), log(), exp() with field combinations?
-- What if you created ratios, differences, and products of different field types?
-- What if you used group operators with VECTOR fields in new ways?
-- What if you combined time series and cross-sectional thinking?
-- The possibilities are INFINITE - be like water and flow with creativity!
-
 FINAL REQUIREMENTS:
 1. Use ONLY the provided operators and fields exactly as listed
 2. Focus on economic intuition and market significance
@@ -5497,7 +4322,6 @@ FINAL REQUIREMENTS:
 5. Ensure perfect syntax and balanced parentheses
 6. Generate {num_templates} diverse, profitable alpha expressions
 7. Each template must be immediately usable in WorldQuant Brain
-8. BE LIKE WATER - fluid, adaptive, and endlessly innovative!
 
 RESPONSE FORMAT - JSON ONLY:
 {{"templates": ["template1", "template2", "template3"]}}
@@ -7927,7 +6751,7 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                 return TemplateResult(
                     template="",
                     region=region,
-                    settings=SimulationSettings(region=region, universe=self.region_configs[region].universe, delay=delay, neutralization=template.get('neutralization', 'INDUSTRY')),
+                    settings={'region': region, 'delay': delay},
                     success=False,
                     error_message="No templates generated",
                     timestamp=time.time()
@@ -8003,7 +6827,7 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                 return TemplateResult(
                     template=best_template.get('template', ''),
                     region=region,
-                    settings=SimulationSettings(region=region, universe=self.region_configs[region].universe, delay=delay, neutralization=template.get('neutralization', 'INDUSTRY')),
+                    settings={'region': region, 'delay': delay},
                     success=False,
                     error_message="No variations generated",
                     timestamp=time.time()
@@ -8153,7 +6977,7 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                 return TemplateResult(
                     template=template['template'],
                     region=region,
-                    settings=SimulationSettings(region=region, universe=self.region_configs[region].universe, delay=delay, neutralization=template.get('neutralization', 'INDUSTRY')),
+                    settings={'region': region, 'delay': delay},
                     success=False,
                     error_message=error_message,
                     timestamp=time.time()
@@ -8170,7 +6994,7 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                 return TemplateResult(
                     template=template['template'],
                     region=region,
-                    settings=SimulationSettings(region=region, universe=self.region_configs[region].universe, delay=delay, neutralization=template.get('neutralization', 'INDUSTRY')),
+                    settings={'region': region, 'delay': delay},
                     success=False,
                     error_message=error_message,
                     timestamp=time.time()
@@ -8191,7 +7015,7 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
             return TemplateResult(
                 template=template['template'],
                 region=region,
-                settings=SimulationSettings(region=region, universe=self.region_configs[region].universe, delay=delay, neutralization=template.get('neutralization', 'INDUSTRY')),
+                settings={'region': region, 'delay': delay},
                 success=False,
                 error_message=error_message,
                 timestamp=time.time()
@@ -8227,7 +7051,7 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                             return TemplateResult(
                                 template=template['template'],
                                 region=region,
-                                settings=SimulationSettings(region=region, universe=self.region_configs[region].universe, delay=delay, neutralization=template.get('neutralization', 'INDUSTRY')),
+                                settings={'region': region, 'delay': delay},
                                 success=False,
                                 error_message="No alphaId in simulation response",
                                 timestamp=time.time()
@@ -8242,7 +7066,7 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                             return TemplateResult(
                                 template=template['template'],
                                 region=region,
-                                settings=SimulationSettings(region=region, universe=self.region_configs[region].universe, delay=delay, neutralization=template.get('neutralization', 'INDUSTRY')),
+                                settings={'region': region, 'delay': delay},
                                 success=False,
                                 error_message=f"Failed to fetch alpha: {alpha_response.status_code}",
                                 timestamp=time.time()
@@ -8292,7 +7116,7 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                         return TemplateResult(
                             template=template['template'],
                             region=region,
-                            settings=SimulationSettings(region=region, universe=self.region_configs[region].universe, delay=delay, neutralization=template.get('neutralization', 'INDUSTRY')),
+                            settings={'region': region, 'delay': delay},
                             sharpe=sharpe,
                             fitness=fitness if fitness is not None else 0,
                             turnover=turnover,
@@ -8319,7 +7143,7 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                         return TemplateResult(
                             template=template['template'],
                             region=region,
-                            settings=SimulationSettings(region=region, universe=self.region_configs[region].universe, delay=delay, neutralization=template.get('neutralization', 'INDUSTRY')),
+                            settings={'region': region, 'delay': delay},
                             success=False,
                             error_message=error_message,
                             timestamp=time.time()
@@ -8340,7 +7164,7 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                         return TemplateResult(
                             template=template['template'],
                             region=region,
-                            settings=SimulationSettings(region=region, universe=self.region_configs[region].universe, delay=delay, neutralization=template.get('neutralization', 'INDUSTRY')),
+                            settings={'region': region, 'delay': delay},
                             success=False,
                             error_message=error_message,
                             timestamp=time.time()
@@ -8375,7 +7199,7 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
         return TemplateResult(
             template=template['template'],
             region=region,
-            settings=SimulationSettings(region=region, universe=self.region_configs[region].universe, delay=delay, neutralization=template.get('neutralization', 'INDUSTRY')),
+            settings={'region': region, 'delay': delay},
             success=False,
             error_message=error_message,
             timestamp=time.time()

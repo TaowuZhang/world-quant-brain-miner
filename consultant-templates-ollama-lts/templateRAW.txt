@@ -1,0 +1,7 @@
+sentiment = ts_backfill(ts_delay( vec_avg(SENTIMENT FROM OTHER),1),20) ;
+vhat=ts_regression(volume,sentiment,250);
+ehat=-ts_regression(returns,vhat,750);
+alpha=group_rank(ehat,bucket(rank(cap),range='0,0.1,0.1'))
+
+group_normalize(ts_zscore(winsorize(ts_backfill(anl4_afv4_eps_high, 120), std=4), 66),densify(industry))
+

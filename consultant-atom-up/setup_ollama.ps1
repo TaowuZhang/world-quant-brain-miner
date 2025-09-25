@@ -44,7 +44,7 @@ try {
     }
     else {
         Write-Host "⚠️  Ollama is running but no models found" -ForegroundColor Yellow
-        Write-Host "   Run: ollama pull qwen2.5-coder" -ForegroundColor Gray
+        Write-Host "   Run: ollama pull llama3.1" -ForegroundColor Gray
     }
 }
 catch {
