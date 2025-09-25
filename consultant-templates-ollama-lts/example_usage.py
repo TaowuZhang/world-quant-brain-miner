@@ -14,7 +14,7 @@ def load_templates(filename: str = 'generatedTemplate.json') -> Dict:
             return json.load(f)
     except FileNotFoundError:
         print(f"❌ Template file {filename} not found!")
-        print("Run the template generator first: python run_enhanced_generator_v2.py")
+        print("Run the template generator first: python run_generator.py")
         return {}
     except Exception as e:
         print(f"❌ Error loading templates: {e}")

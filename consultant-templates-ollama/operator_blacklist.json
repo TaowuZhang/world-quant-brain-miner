@@ -1,0 +1,11 @@
+{
+  "blacklisted_operators": [],
+  "usage_count": {
+    "abs": 1,
+    "log": 1
+  },
+  "blacklist_timestamps": {},
+  "blacklist_reasons": {},
+  "successful_simulations": 9,
+  "last_updated": 1758841801.0916367
+}

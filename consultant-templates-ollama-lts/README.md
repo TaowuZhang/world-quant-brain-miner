@@ -46,14 +46,25 @@ This tool uses the DeepSeek API to generate comprehensive alpha expression templ
 
 ## Usage
 
-### Quick Start (Enhanced Template Generation)
+### Quick Start (Basic Template Generation)
 ```bash
+python run_generator.py
+```
+
+### Enhanced Multi-Simulation Testing
+```bash
+# Generate templates AND test them with multi-simulation
+python run_enhanced_generator.py
+
 # Enhanced v2 with progress saving and resume functionality
 python run_enhanced_generator_v2.py
 ```
 
 ### Advanced Usage
 ```bash
+# Basic template generation
+python template_generator.py --credentials credential.txt --ollama-model llama3.1
+
 # Enhanced v2 with progress saving and resume (Recommended)
 python run_enhanced_generator_v2.py
 
@@ -162,11 +173,15 @@ python run_enhanced_generator_v2.py --resume
 
 ## Files
 
-### Enhanced Multi-Simulation v2 (Current)
-- `enhanced_template_generator_v2.py`: Enhanced generator v2 with progress saving and resume
-- `run_enhanced_generator_v2.py`: Enhanced runner script v2
+### Basic Template Generation
+- `template_generator.py`: Main generator class
 - `operatorRAW.json`: Available operators database
 - `templateRAW.txt`: Raw template examples
+- `generatedTemplate.json`: Generated output (created after running)
+
+### Enhanced Multi-Simulation v2 (Recommended)
+- `enhanced_template_generator_v2.py`: Enhanced generator v2 with progress saving and resume
+- `run_enhanced_generator_v2.py`: Enhanced runner script v2
 - `enhanced_results_v2.json`: Enhanced output with simulation results (created after running)
 - `template_progress_v2.json`: Progress file for resume functionality (created during running)
 
