@@ -143,12 +143,13 @@ class BruteforceResult:
     simulation_time: float = 0.0
 
 class BruteforceTemplateGenerator:
-    def __init__(self, credentials_path: str, ollama_model: str = "llama3.1", max_concurrent: int = 8):
+    def __init__(self, credentials_path: str, ollama_model: str = "llama3.1", max_concurrent: int = 8, target_dataset: str = None):
         """Initialize the bruteforce template generator"""
         self.sess = requests.Session()
         self.credentials_path = credentials_path
         self.ollama_model = ollama_model
         self.max_concurrent = min(max_concurrent, 8)  # WorldQuant Brain limit is 8
+        self.target_dataset = target_dataset  # Specific dataset to test
         
         # Thread management similar to consultant-templates-ollama
         self.executor = ThreadPoolExecutor(max_workers=self.max_concurrent)
@@ -458,6 +459,13 @@ class BruteforceTemplateGenerator:
                 with open(cache_file, 'r') as f:
                     cached_data = json.load(f)
                     logger.info(f"📊 Loaded {len(cached_data)} cached fields for {region} delay={delay}")
+                    
+                    # Filter by target dataset if specified
+                    if self.target_dataset:
+                        filtered_data = [field for field in cached_data if self.target_dataset in field.get('id', '')]
+                        logger.info(f"🎯 Filtered to {len(filtered_data)} fields for dataset {self.target_dataset}")
+                        return filtered_data
+                    
                     return cached_data
             
             logger.info(f"🌐 No cache found for {region} delay={delay}, fetching from API...")
@@ -494,6 +502,14 @@ class BruteforceTemplateGenerator:
             
             # Remove duplicates and use the combined list
             dataset_ids = list(set(all_dataset_ids))
+            
+            # Filter by target dataset if specified
+            if self.target_dataset:
+                dataset_ids = [ds for ds in dataset_ids if self.target_dataset in ds]
+                logger.info(f"🎯 Filtered datasets to {len(dataset_ids)} for target dataset {self.target_dataset}")
+                if not dataset_ids:
+                    logger.warning(f"⚠️ No datasets found matching {self.target_dataset} for region {region}")
+                    return []
             
             if not dataset_ids:
                 logger.warning(f"⚠️ No datasets found for region {region}, using fallback datasets")
@@ -1567,6 +1583,39 @@ Generate a new template:"""
             logger.error(f"❌ Failed to load custom templates: {e}")
             return []
 
+    def load_nws77_template(self, template_file: str = "nws77_template.json") -> List[str]:
+        """Load and process the nws77 template with variable substitution"""
+        try:
+            with open(template_file, 'r', encoding='utf-8') as f:
+                template_data = json.load(f)
+            
+            base_template = template_data['template']
+            variables = template_data['variables']
+            
+            # Get all possible combinations
+            dataprocess_options = variables['dataprocess_op']['options']
+            ts_statistical_options = variables['ts_Statistical_op']['options']
+            
+            templates = []
+            
+            # Generate all combinations of the template variables
+            for dataprocess_op in dataprocess_options:
+                for ts_statistical_op in ts_statistical_options:
+                    # Replace variable placeholders
+                    template = base_template.replace('<dataprocess_op/>', dataprocess_op)
+                    template = template.replace('<ts_Statistical_op/>', ts_statistical_op)
+                    template = template.replace('<nws77/>', 'nws77_sentiment_impact_projection')  # Use the specific field
+                    
+                    templates.append(template)
+                    logger.info(f"🔧 Generated nws77 template: {template[:50]}...")
+            
+            logger.info(f"📊 Generated {len(templates)} nws77 template variations")
+            return templates
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to load nws77 template: {e}")
+            return []
+
     def _execute_simulations_concurrent(self, simulation_tasks: List[Tuple], all_results: List[BruteforceResult]):
         """Execute simulations concurrently using thread management (legacy method)"""
         task_index = 0
@@ -1709,6 +1758,19 @@ Generate a new template:"""
                     self.save_results(all_results)
                 else:
                     logger.error("❌ No custom templates loaded")
+            elif custom_template_file == "nws77_template.json":
+                # Load nws77 template with variable substitution
+                templates = self.load_nws77_template(custom_template_file)
+                if templates:
+                    logger.info(f"🎯 Testing {len(templates)} nws77 template variations (NO OLLAMA)")
+                    logger.info("🚀 Starting direct bruteforce testing without AI generation...")
+                    # Direct bruteforce without any AI generation
+                    results = self.bruteforce_multiple_templates(templates, use_ollama=False)
+                    all_results.extend(results)
+                    self.results = all_results
+                    self.save_results(all_results)
+                else:
+                    logger.error("❌ No nws77 templates loaded")
             else:
                 # Test single custom template (legacy mode)
                 template = self.load_custom_template(custom_template_file)
@@ -1781,13 +1843,15 @@ def main():
     parser.add_argument('--custom-template', help='Path to custom template JSON file')
     parser.add_argument('--max-batches', type=int, default=3, help='Maximum number of batches (4 templates per batch)')
     parser.add_argument('--resume', action='store_true', help='Resume from previous progress')
+    parser.add_argument('--target-dataset', help='Specific dataset to test (e.g., nws77)')
     
     args = parser.parse_args()
     
     generator = BruteforceTemplateGenerator(
         credentials_path=args.credentials,
         ollama_model=args.ollama_model,
-        max_concurrent=args.max_concurrent
+        max_concurrent=args.max_concurrent,
+        target_dataset=args.target_dataset
     )
     
     generator.run_bruteforce(

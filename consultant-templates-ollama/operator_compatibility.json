@@ -1,15 +1,16 @@
 {
   "operators": {
     "add": {
-      "failures": 44,
-      "successes": 0,
+      "failures": 114,
+      "successes": 33,
       "error_types": {
-        "other": 40,
-        "input_count": 1,
-        "event_inputs": 2,
-        "unknown_variable": 1
+        "other": 100,
+        "input_count": 7,
+        "event_inputs": 4,
+        "unknown_variable": 2,
+        "syntax_error": 1
       },
-      "last_failure": 1758668647.0634928,
+      "last_failure": 1758853676.4851494,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -17,16 +18,18 @@
           "added_at": 1758664828.7929244
         }
       ],
-      "compatibility_score": 0.0
+      "compatibility_score": 0.22297297297297297
     },
     "power": {
-      "failures": 25,
-      "successes": 0,
+      "failures": 71,
+      "successes": 16,
       "error_types": {
-        "other": 16,
-        "event_inputs": 9
+        "other": 58,
+        "event_inputs": 11,
+        "unknown_variable": 1,
+        "input_count": 1
       },
-      "last_failure": 1758841806.148608,
+      "last_failure": 1758853622.085137,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -34,17 +37,18 @@
           "added_at": 1758664828.7939658
         }
       ],
-      "compatibility_score": 0.0
+      "compatibility_score": 0.18181818181818182
     },
     "ts_rank": {
-      "failures": 310,
-      "successes": 0,
+      "failures": 390,
+      "successes": 8,
       "error_types": {
-        "unknown_variable": 97,
-        "other": 212,
-        "input_count": 1
+        "unknown_variable": 98,
+        "other": 286,
+        "input_count": 5,
+        "syntax_error": 1
       },
-      "last_failure": 1758838903.3317988,
+      "last_failure": 1758853632.450606,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -52,7 +56,7 @@
           "added_at": 1758664832.4903219
         }
       ],
-      "compatibility_score": 0.0
+      "compatibility_score": 0.020050125313283207
     },
     "anl69_best_bps_stddev": {
       "failures": 44,
@@ -115,15 +119,16 @@
       "compatibility_score": 0.0
     },
     "subtract": {
-      "failures": 12,
-      "successes": 0,
+      "failures": 128,
+      "successes": 44,
       "error_types": {
-        "other": 9,
-        "input_count": 1,
-        "unknown_variable": 1,
-        "event_inputs": 1
+        "other": 116,
+        "input_count": 4,
+        "unknown_variable": 5,
+        "event_inputs": 1,
+        "syntax_error": 2
       },
-      "last_failure": 1758841723.7134833,
+      "last_failure": 1758853622.0971355,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -131,16 +136,17 @@
           "added_at": 1758665064.0159252
         }
       ],
-      "compatibility_score": 0.0
+      "compatibility_score": 0.2543352601156069
     },
     "ts_delta": {
-      "failures": 65,
-      "successes": 0,
+      "failures": 109,
+      "successes": 3,
       "error_types": {
-        "other": 62,
-        "unknown_variable": 3
+        "other": 101,
+        "unknown_variable": 4,
+        "input_count": 4
       },
-      "last_failure": 1758839046.2544146,
+      "last_failure": 1758853480.2645137,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -148,18 +154,19 @@
           "added_at": 1758665240.1738102
         }
       ],
-      "compatibility_score": 0.0
+      "compatibility_score": 0.02654867256637168
     },
     "ts_zscore": {
-      "failures": 200,
-      "successes": 2,
+      "failures": 473,
+      "successes": 9,
       "error_types": {
-        "other": 173,
+        "other": 442,
         "unknown_variable": 17,
         "syntax_error": 8,
-        "event_inputs": 2
+        "event_inputs": 3,
+        "input_count": 3
       },
-      "last_failure": 1758841802.118529,
+      "last_failure": 1758853659.027996,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -167,18 +174,19 @@
           "added_at": 1758665265.3850162
         }
       ],
-      "compatibility_score": 0.009852216748768473
+      "compatibility_score": 0.018633540372670808
     },
     "ts_std_dev": {
-      "failures": 211,
-      "successes": 36,
+      "failures": 416,
+      "successes": 49,
       "error_types": {
-        "other": 159,
+        "other": 363,
         "syntax_error": 13,
         "unknown_variable": 24,
-        "event_inputs": 15
+        "event_inputs": 15,
+        "input_count": 1
       },
-      "last_failure": 1758841687.5199022,
+      "last_failure": 1758853427.567963,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -186,17 +194,19 @@
           "added_at": 1758665265.3861482
         }
       ],
-      "compatibility_score": 0.14516129032258066
+      "compatibility_score": 0.10515021459227468
     },
     "multiply": {
-      "failures": 6,
-      "successes": 0,
+      "failures": 271,
+      "successes": 99,
       "error_types": {
-        "input_count": 1,
-        "event_inputs": 3,
-        "other": 2
+        "input_count": 8,
+        "event_inputs": 10,
+        "other": 244,
+        "syntax_error": 3,
+        "unknown_variable": 6
       },
-      "last_failure": 1758841721.6899405,
+      "last_failure": 1758853561.2484567,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -204,19 +214,19 @@
           "added_at": 1758665284.1049047
         }
       ],
-      "compatibility_score": 0.0
+      "compatibility_score": 0.2668463611859838
     },
     "rank": {
-      "failures": 89,
-      "successes": 20,
+      "failures": 176,
+      "successes": 52,
       "error_types": {
         "event_inputs": 70,
-        "input_count": 6,
+        "input_count": 17,
         "syntax_error": 1,
-        "unknown_variable": 3,
-        "other": 9
+        "unknown_variable": 6,
+        "other": 82
       },
-      "last_failure": 1758840742.6374652,
+      "last_failure": 1758853605.732633,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -224,13 +234,15 @@
           "added_at": 1758665544.893774
         }
       ],
-      "compatibility_score": 0.18181818181818182
+      "compatibility_score": 0.22707423580786026
     },
     "ts_max": {
-      "failures": 0,
-      "successes": 0,
-      "error_types": {},
-      "last_failure": null,
+      "failures": 5,
+      "successes": 1,
+      "error_types": {
+        "other": 5
+      },
+      "last_failure": 1758853064.5645123,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -238,18 +250,19 @@
           "added_at": 1758665544.8953555
         }
       ],
-      "compatibility_score": 0.5
+      "compatibility_score": 0.14285714285714285
     },
     "ts_min": {
-      "failures": 27,
-      "successes": 2,
+      "failures": 49,
+      "successes": 3,
       "error_types": {
-        "other": 22,
+        "other": 43,
         "unknown_variable": 3,
         "syntax_error": 1,
-        "event_inputs": 1
+        "event_inputs": 1,
+        "input_count": 1
       },
-      "last_failure": 1758841233.4596176,
+      "last_failure": 1758853492.478716,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -257,18 +270,19 @@
           "added_at": 1758665648.0713263
         }
       ],
-      "compatibility_score": 0.06666666666666667
+      "compatibility_score": 0.05660377358490566
     },
     "ts_corr": {
-      "failures": 228,
-      "successes": 27,
+      "failures": 467,
+      "successes": 39,
       "error_types": {
-        "unknown_variable": 45,
-        "other": 162,
+        "unknown_variable": 46,
+        "other": 399,
         "syntax_error": 9,
-        "event_inputs": 12
+        "event_inputs": 12,
+        "input_count": 1
       },
-      "last_failure": 1758841675.4491715,
+      "last_failure": 1758853615.9141536,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -276,7 +290,7 @@
           "added_at": 1758667222.427226
         }
       ],
-      "compatibility_score": 0.10546875
+      "compatibility_score": 0.07692307692307693
     },
     "ts_ratio": {
       "failures": 11,
@@ -295,13 +309,14 @@
       "compatibility_score": 0.0
     },
     "group_neutralize": {
-      "failures": 133,
-      "successes": 0,
+      "failures": 140,
+      "successes": 4,
       "error_types": {
-        "unknown_variable": 34,
-        "other": 99
+        "unknown_variable": 36,
+        "other": 103,
+        "input_count": 1
       },
-      "last_failure": 1758668647.0554943,
+      "last_failure": 1758853364.7851489,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -309,18 +324,18 @@
           "added_at": 1758667590.7199094
         }
       ],
-      "compatibility_score": 0.0
+      "compatibility_score": 0.027586206896551724
     },
     "vec_avg": {
-      "failures": 936,
+      "failures": 1053,
       "successes": 1,
       "error_types": {
-        "unknown_variable": 177,
+        "unknown_variable": 182,
         "event_inputs": 72,
-        "other": 682,
-        "input_count": 5
+        "other": 791,
+        "input_count": 8
       },
-      "last_failure": 1758841397.9434364,
+      "last_failure": 1758853741.5195804,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -328,17 +343,19 @@
           "added_at": 1758667592.0026014
         }
       ],
-      "compatibility_score": 0.0010660980810234541
+      "compatibility_score": 0.0009478672985781991
     },
     "signed_power": {
-      "failures": 50,
-      "successes": 0,
+      "failures": 124,
+      "successes": 16,
       "error_types": {
-        "event_inputs": 24,
-        "other": 22,
-        "unknown_variable": 4
+        "event_inputs": 26,
+        "other": 89,
+        "unknown_variable": 6,
+        "syntax_error": 1,
+        "input_count": 2
       },
-      "last_failure": 1758841675.4441483,
+      "last_failure": 1758853488.4067059,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -346,7 +363,7 @@
           "added_at": 1758667592.0006027
         }
       ],
-      "compatibility_score": 0.0
+      "compatibility_score": 0.11347517730496454
     },
     "group_normalize": {
       "failures": 48,
@@ -366,13 +383,14 @@
       "compatibility_score": 0.0
     },
     "group_zscore": {
-      "failures": 19,
-      "successes": 0,
+      "failures": 73,
+      "successes": 20,
       "error_types": {
-        "other": 16,
-        "unknown_variable": 3
+        "other": 56,
+        "unknown_variable": 12,
+        "input_count": 5
       },
-      "last_failure": 1758668619.2929442,
+      "last_failure": 1758853646.8690636,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -380,15 +398,17 @@
           "added_at": 1758667632.6327264
         }
       ],
-      "compatibility_score": 0.0
+      "compatibility_score": 0.2127659574468085
     },
     "group_rank": {
-      "failures": 11,
-      "successes": 0,
+      "failures": 33,
+      "successes": 1,
       "error_types": {
-        "other": 11
+        "other": 27,
+        "unknown_variable": 4,
+        "input_count": 2
       },
-      "last_failure": 1758668482.5918229,
+      "last_failure": 1758853459.958877,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -396,17 +416,18 @@
           "added_at": 1758667632.634945
         }
       ],
-      "compatibility_score": 0.0
+      "compatibility_score": 0.02857142857142857
     },
     "ts_mean": {
-      "failures": 22,
-      "successes": 4,
+      "failures": 57,
+      "successes": 12,
       "error_types": {
-        "other": 20,
-        "unknown_variable": 1,
-        "event_inputs": 1
+        "other": 51,
+        "unknown_variable": 3,
+        "event_inputs": 2,
+        "input_count": 1
       },
-      "last_failure": 1758841703.6009457,
+      "last_failure": 1758853632.4572241,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -414,16 +435,16 @@
           "added_at": 1758838276.0290678
         }
       ],
-      "compatibility_score": 0.14814814814814814
+      "compatibility_score": 0.17142857142857143
     },
     "ts_sum": {
-      "failures": 16,
-      "successes": 7,
+      "failures": 21,
+      "successes": 8,
       "error_types": {
-        "other": 15,
+        "other": 20,
         "event_inputs": 1
       },
-      "last_failure": 1758839018.060131,
+      "last_failure": 1758853665.1191907,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -431,18 +452,18 @@
           "added_at": 1758838796.4583452
         }
       ],
-      "compatibility_score": 0.2916666666666667
+      "compatibility_score": 0.26666666666666666
     },
     "zscore": {
-      "failures": 126,
-      "successes": 15,
+      "failures": 151,
+      "successes": 24,
       "error_types": {
         "event_inputs": 98,
-        "input_count": 12,
+        "input_count": 23,
         "syntax_error": 2,
-        "other": 14
+        "other": 28
       },
-      "last_failure": 1758840859.8067305,
+      "last_failure": 1758853676.482148,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -450,17 +471,17 @@
           "added_at": 1758836254.1889179
         }
       ],
-      "compatibility_score": 0.1056338028169014
+      "compatibility_score": 0.13636363636363635
     },
     "scale": {
-      "failures": 15,
-      "successes": 1,
+      "failures": 36,
+      "successes": 3,
       "error_types": {
         "event_inputs": 12,
-        "other": 2,
-        "input_count": 1
+        "other": 18,
+        "input_count": 6
       },
-      "last_failure": 1758840571.6446567,
+      "last_failure": 1758853632.463381,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -468,16 +489,17 @@
           "added_at": 1758836412.0970747
         }
       ],
-      "compatibility_score": 0.058823529411764705
+      "compatibility_score": 0.075
     },
     "vec_sum": {
-      "failures": 55,
+      "failures": 86,
       "successes": 1,
       "error_types": {
-        "other": 51,
-        "event_inputs": 4
+        "other": 79,
+        "event_inputs": 4,
+        "unknown_variable": 3
       },
-      "last_failure": 1758841397.948557,
+      "last_failure": 1758853741.5225828,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -485,26 +507,29 @@
           "added_at": 1758838386.6747046
         }
       ],
-      "compatibility_score": 0.017543859649122806
+      "compatibility_score": 0.011363636363636364
     },
     "ts_product": {
-      "failures": 1,
+      "failures": 8,
       "successes": 0,
       "error_types": {
-        "unknown_variable": 1
+        "unknown_variable": 1,
+        "other": 6,
+        "input_count": 1
       },
-      "last_failure": 1758837586.3803096,
+      "last_failure": 1758853665.1160443,
       "workarounds": [],
       "compatibility_score": 0.0
     },
     "ts_scale": {
-      "failures": 36,
-      "successes": 0,
+      "failures": 88,
+      "successes": 7,
       "error_types": {
-        "other": 35,
-        "event_inputs": 1
+        "other": 86,
+        "event_inputs": 1,
+        "input_count": 1
       },
-      "last_failure": 1758841802.1195395,
+      "last_failure": 1758853661.0702915,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -512,46 +537,52 @@
           "added_at": 1758838796.45195
         }
       ],
-      "compatibility_score": 0.0
+      "compatibility_score": 0.07291666666666667
     },
     "ts_regression": {
-      "failures": 2,
+      "failures": 5,
       "successes": 0,
       "error_types": {
-        "other": 2
+        "other": 5
       },
-      "last_failure": 1758839054.3030236,
+      "last_failure": 1758853135.9354076,
       "workarounds": [],
       "compatibility_score": 0.0
     },
     "vec_min": {
-      "failures": 34,
+      "failures": 99,
       "successes": 0,
       "error_types": {
-        "other": 34
+        "other": 94,
+        "input_count": 3,
+        "unknown_variable": 2
       },
-      "last_failure": 1758841397.9464686,
+      "last_failure": 1758853741.54058,
       "workarounds": [],
       "compatibility_score": 0.0
     },
     "vec_max": {
-      "failures": 25,
+      "failures": 65,
       "successes": 0,
       "error_types": {
-        "other": 25
+        "other": 61,
+        "input_count": 4
       },
-      "last_failure": 1758841397.9454412,
+      "last_failure": 1758853640.668666,
       "workarounds": [],
       "compatibility_score": 0.0
     },
     "log": {
-      "failures": 5,
-      "successes": 1,
+      "failures": 272,
+      "successes": 66,
       "error_types": {
-        "event_inputs": 4,
-        "other": 1
+        "event_inputs": 26,
+        "other": 224,
+        "syntax_error": 7,
+        "input_count": 12,
+        "unknown_variable": 3
       },
-      "last_failure": 1758841723.7084837,
+      "last_failure": 1758853650.9476025,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -559,16 +590,19 @@
           "added_at": 1758841450.1299136
         }
       ],
-      "compatibility_score": 0.14285714285714285
+      "compatibility_score": 0.19469026548672566
     },
     "min": {
-      "failures": 4,
-      "successes": 0,
+      "failures": 151,
+      "successes": 33,
       "error_types": {
-        "event_inputs": 3,
-        "other": 1
+        "event_inputs": 16,
+        "other": 121,
+        "syntax_error": 2,
+        "input_count": 8,
+        "unknown_variable": 4
       },
-      "last_failure": 1758841806.1466007,
+      "last_failure": 1758853571.36263,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -576,16 +610,19 @@
           "added_at": 1758841462.2009778
         }
       ],
-      "compatibility_score": 0.0
+      "compatibility_score": 0.1783783783783784
     },
     "abs": {
-      "failures": 5,
-      "successes": 1,
+      "failures": 228,
+      "successes": 54,
       "error_types": {
-        "event_inputs": 2,
-        "other": 3
+        "event_inputs": 11,
+        "other": 196,
+        "syntax_error": 4,
+        "unknown_variable": 5,
+        "input_count": 12
       },
-      "last_failure": 1758841723.7094812,
+      "last_failure": 1758853676.4871485,
       "workarounds": [
         {
           "error_type": "event_inputs",
@@ -593,10 +630,534 @@
           "added_at": 1758841466.2760305
         }
       ],
-      "compatibility_score": 0.14285714285714285
+      "compatibility_score": 0.19081272084805653
+    },
+    "sign": {
+      "failures": 85,
+      "successes": 16,
+      "error_types": {
+        "event_inputs": 7,
+        "other": 73,
+        "syntax_error": 3,
+        "input_count": 2
+      },
+      "last_failure": 1758853650.944919,
+      "workarounds": [
+        {
+          "error_type": "event_inputs",
+          "solution": "vec_avg(FIELD)",
+          "added_at": 1758841866.513484
+        }
+      ],
+      "compatibility_score": 0.1568627450980392
+    },
+    "exp": {
+      "failures": 1,
+      "successes": 0,
+      "error_types": {
+        "event_inputs": 1
+      },
+      "last_failure": 1758841928.9229157,
+      "workarounds": [
+        {
+          "error_type": "event_inputs",
+          "solution": "vec_avg(FIELD)",
+          "added_at": 1758841928.9239156
+        }
+      ],
+      "compatibility_score": 0.0
+    },
+    "divide": {
+      "failures": 72,
+      "successes": 21,
+      "error_types": {
+        "event_inputs": 2,
+        "other": 65,
+        "input_count": 4,
+        "unknown_variable": 1
+      },
+      "last_failure": 1758853506.644509,
+      "workarounds": [
+        {
+          "error_type": "event_inputs",
+          "solution": "vec_avg(FIELD)",
+          "added_at": 1758841942.9962635
+        }
+      ],
+      "compatibility_score": 0.22340425531914893
+    },
+    "sqrt": {
+      "failures": 10,
+      "successes": 4,
+      "error_types": {
+        "event_inputs": 1,
+        "other": 9
+      },
+      "last_failure": 1758853644.7919207,
+      "workarounds": [
+        {
+          "error_type": "event_inputs",
+          "solution": "vec_avg(FIELD)",
+          "added_at": 1758842492.5397394
+        }
+      ],
+      "compatibility_score": 0.26666666666666666
+    },
+    "max": {
+      "failures": 33,
+      "successes": 7,
+      "error_types": {
+        "event_inputs": 1,
+        "other": 25,
+        "input_count": 6,
+        "unknown_variable": 1
+      },
+      "last_failure": 1758853389.069212,
+      "workarounds": [
+        {
+          "error_type": "event_inputs",
+          "solution": "vec_avg(FIELD)",
+          "added_at": 1758842510.6513803
+        }
+      ],
+      "compatibility_score": 0.17073170731707318
+    },
+    "inverse": {
+      "failures": 5,
+      "successes": 0,
+      "error_types": {
+        "other": 4,
+        "input_count": 1
+      },
+      "last_failure": 1758853468.0882053,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "sum": {
+      "failures": 1,
+      "successes": 0,
+      "error_types": {
+        "other": 1
+      },
+      "last_failure": 1758847488.982284,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "vec_std": {
+      "failures": 37,
+      "successes": 0,
+      "error_types": {
+        "other": 37
+      },
+      "last_failure": 1758852042.5555258,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "vec_rank": {
+      "failures": 25,
+      "successes": 0,
+      "error_types": {
+        "other": 25
+      },
+      "last_failure": 1758852093.0905037,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "bucket": {
+      "failures": 13,
+      "successes": 0,
+      "error_types": {
+        "other": 12,
+        "input_count": 1
+      },
+      "last_failure": 1758853587.5189202,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "group_scale": {
+      "failures": 30,
+      "successes": 5,
+      "error_types": {
+        "unknown_variable": 6,
+        "other": 20,
+        "input_count": 4
+      },
+      "last_failure": 1758853615.8981674,
+      "workarounds": [],
+      "compatibility_score": 0.1388888888888889
+    },
+    "group_mean": {
+      "failures": 5,
+      "successes": 0,
+      "error_types": {
+        "unknown_variable": 1,
+        "other": 1,
+        "input_count": 3
+      },
+      "last_failure": 1758853587.5209196,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "group_min": {
+      "failures": 8,
+      "successes": 1,
+      "error_types": {
+        "other": 8
+      },
+      "last_failure": 1758853364.789149,
+      "workarounds": [],
+      "compatibility_score": 0.1
+    },
+    "group_max": {
+      "failures": 7,
+      "successes": 1,
+      "error_types": {
+        "other": 4,
+        "input_count": 3
+      },
+      "last_failure": 1758852631.15301,
+      "workarounds": [],
+      "compatibility_score": 0.1111111111111111
+    },
+    "not": {
+      "failures": 1,
+      "successes": 0,
+      "error_types": {
+        "other": 1
+      },
+      "last_failure": 1758849413.4483984,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "vec_scale": {
+      "failures": 2,
+      "successes": 0,
+      "error_types": {
+        "other": 2
+      },
+      "last_failure": 1758852042.5598345,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "if_else": {
+      "failures": 5,
+      "successes": 0,
+      "error_types": {
+        "other": 4,
+        "input_count": 1
+      },
+      "last_failure": 1758853439.732224,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "and": {
+      "failures": 1,
+      "successes": 1,
+      "error_types": {
+        "other": 1
+      },
+      "last_failure": 1758852022.327133,
+      "workarounds": [],
+      "compatibility_score": 0.3333333333333333
+    },
+    "or": {
+      "failures": 1,
+      "successes": 0,
+      "error_types": {
+        "other": 1
+      },
+      "last_failure": 1758850773.9751918,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "is_nan": {
+      "failures": 4,
+      "successes": 0,
+      "error_types": {
+        "other": 4
+      },
+      "last_failure": 1758852690.3621197,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "hump": {
+      "failures": 5,
+      "successes": 0,
+      "error_types": {
+        "other": 4,
+        "input_count": 1
+      },
+      "last_failure": 1758853332.3761055,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "greater_equal": {
+      "failures": 2,
+      "successes": 0,
+      "error_types": {
+        "other": 2
+      },
+      "last_failure": 1758853342.5143926,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "ts_arg_max": {
+      "failures": 8,
+      "successes": 3,
+      "error_types": {
+        "input_count": 2,
+        "other": 6
+      },
+      "last_failure": 1758853646.873301,
+      "workarounds": [],
+      "compatibility_score": 0.25
+    },
+    "greater": {
+      "failures": 2,
+      "successes": 0,
+      "error_types": {
+        "input_count": 1,
+        "other": 1
+      },
+      "last_failure": 1758853528.9332905,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "days_from_last_change": {
+      "failures": 1,
+      "successes": 1,
+      "error_types": {
+        "other": 1
+      },
+      "last_failure": 1758853273.5567508,
+      "workarounds": [],
+      "compatibility_score": 0.3333333333333333
+    },
+    "ts_quantile": {
+      "failures": 6,
+      "successes": 0,
+      "error_types": {
+        "other": 6
+      },
+      "last_failure": 1758853464.020651,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "vector_neut": {
+      "failures": 8,
+      "successes": 1,
+      "error_types": {
+        "other": 8
+      },
+      "last_failure": 1758853595.6059613,
+      "workarounds": [],
+      "compatibility_score": 0.1
+    },
+    "ts_covariance": {
+      "failures": 4,
+      "successes": 0,
+      "error_types": {
+        "other": 4
+      },
+      "last_failure": 1758853322.2344978,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "scale_down": {
+      "failures": 6,
+      "successes": 0,
+      "error_types": {
+        "other": 4,
+        "input_count": 2
+      },
+      "last_failure": 1758853439.7262237,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "quantile": {
+      "failures": 20,
+      "successes": 0,
+      "error_types": {
+        "other": 7,
+        "input_count": 13
+      },
+      "last_failure": 1758853472.1433146,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "group_backfill": {
+      "failures": 7,
+      "successes": 0,
+      "error_types": {
+        "other": 6,
+        "input_count": 1
+      },
+      "last_failure": 1758853498.5460045,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "normalize": {
+      "failures": 8,
+      "successes": 4,
+      "error_types": {
+        "other": 7,
+        "input_count": 1
+      },
+      "last_failure": 1758853449.8372672,
+      "workarounds": [],
+      "compatibility_score": 0.3076923076923077
+    },
+    "trade_when": {
+      "failures": 3,
+      "successes": 1,
+      "error_types": {
+        "input_count": 1,
+        "other": 2
+      },
+      "last_failure": 1758853528.9312658,
+      "workarounds": [],
+      "compatibility_score": 0.2
+    },
+    "to_nan": {
+      "failures": 1,
+      "successes": 0,
+      "error_types": {
+        "input_count": 1
+      },
+      "last_failure": 1758852598.1941106,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "ts_av_diff": {
+      "failures": 8,
+      "successes": 0,
+      "error_types": {
+        "other": 7,
+        "unknown_variable": 1
+      },
+      "last_failure": 1758853543.0673513,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "ts_decay_linear": {
+      "failures": 3,
+      "successes": 1,
+      "error_types": {
+        "input_count": 1,
+        "other": 2
+      },
+      "last_failure": 1758853520.8255312,
+      "workarounds": [],
+      "compatibility_score": 0.2
+    },
+    "winsorize": {
+      "failures": 9,
+      "successes": 0,
+      "error_types": {
+        "other": 4,
+        "input_count": 5
+      },
+      "last_failure": 1758853676.4771404,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "reverse": {
+      "failures": 7,
+      "successes": 2,
+      "error_types": {
+        "other": 6,
+        "unknown_variable": 1
+      },
+      "last_failure": 1758853601.6861532,
+      "workarounds": [],
+      "compatibility_score": 0.2
+    },
+    "last_diff_value": {
+      "failures": 0,
+      "successes": 1,
+      "error_types": {},
+      "last_failure": null,
+      "workarounds": [],
+      "compatibility_score": 0.5
+    },
+    "ts_arg_min": {
+      "failures": 2,
+      "successes": 0,
+      "error_types": {
+        "other": 2
+      },
+      "last_failure": 1758853194.6429057,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "ts_delay": {
+      "failures": 3,
+      "successes": 1,
+      "error_types": {
+        "other": 3
+      },
+      "last_failure": 1758853498.5438137,
+      "workarounds": [],
+      "compatibility_score": 0.2
+    },
+    "ts_target_tvr_delta_limit": {
+      "failures": 2,
+      "successes": 0,
+      "error_types": {
+        "other": 2
+      },
+      "last_failure": 1758853632.4456065,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "kth_element": {
+      "failures": 4,
+      "successes": 0,
+      "error_types": {
+        "other": 4
+      },
+      "last_failure": 1758853506.658253,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "equal": {
+      "failures": 0,
+      "successes": 1,
+      "error_types": {},
+      "last_failure": null,
+      "workarounds": [],
+      "compatibility_score": 0.5
+    },
+    "ts_target_tvr_decay": {
+      "failures": 1,
+      "successes": 0,
+      "error_types": {
+        "other": 1
+      },
+      "last_failure": 1758853407.3345582,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "jump_decay": {
+      "failures": 1,
+      "successes": 0,
+      "error_types": {
+        "other": 1
+      },
+      "last_failure": 1758853498.5412602,
+      "workarounds": [],
+      "compatibility_score": 0.0
+    },
+    "ts_backfill": {
+      "failures": 0,
+      "successes": 1,
+      "error_types": {},
+      "last_failure": null,
+      "workarounds": [],
+      "compatibility_score": 0.5
     }
   },
-  "last_updated": 1758841808.160447,
-  "total_failures": 2895,
-  "total_fixes": 1099
+  "last_updated": 1758853741.5455797,
+  "total_failures": 6009,
+  "total_fixes": 2551
 }

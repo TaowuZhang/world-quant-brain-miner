@@ -1,0 +1,55 @@
+{
+  "template_name": "nws77_sentiment_analysis_template",
+  "description": "Advanced sentiment analysis template based on nws77 dataset experience with variable placeholders",
+  "dataset_specific": "nws77",
+  "template": "ts_decay_linear(<ts_Statistical_op/>(<dataprocess_op/>(-group_backfill(vec_max(<nws77/>),country,60, std = 4.0)), 90),5, dense = false)",
+  "variables": {
+    "nws77": {
+      "description": "EUR region TOP2500 universe, DataSet ID: nws77. DataFields Type: Vector",
+      "type": "vector",
+      "dataset_id": "nws77",
+      "region": "EUR",
+      "universe": "TOP2500"
+    },
+    "dataprocess_op": {
+      "description": "Data processing functions like quantile(x), winsorize(x) for data normalization",
+      "type": "operator",
+      "options": ["quantile", "winsorize", "normalize", "rank", "ts_rank"]
+    },
+    "ts_Statistical_op": {
+      "description": "Time series statistical functions like ts_ir(x,days), ts_zscore(x,days), ts_entropy(x,days)",
+      "type": "operator", 
+      "options": ["ts_ir", "ts_zscore", "ts_entropy", "ts_mean", "ts_std_dev", "ts_corr"]
+    }
+  },
+  "search_space_size": "29*2*3=174 combinations (29 data fields * 2 dataprocess ops * 3 ts_statistical ops)",
+  "data_characteristics": {
+    "distribution": "Highly concentrated and negatively skewed distribution, with a prominent mode around -0.18",
+    "sparsity": "Extremely sparse with high prevalence of NaN values",
+    "coverage": "Strong upward trend since 2013 with clear quarterly seasonality",
+    "time_series_nature": "Event-driven, not continuous time series, corresponds to discrete events like earnings calls",
+    "group_behavior": "Group-level averages show strong co-movement, suggesting common macro influence"
+  },
+  "implementation_details": {
+    "signal_processing": "vec_max selects maximum element from vector, group_backfill fills missing values to reduce unexpected position closures",
+    "data_adjustment": "dataprocess_op adjusts data distribution and reduces extreme values to enhance signal",
+    "time_series_extraction": "ts_Statistical_op extracts temporal information from preprocessed data",
+    "signal_smoothing": "ts_decay_linear further smooths and enhances the signal"
+  },
+  "performance_notes": {
+    "turnover": "Generally high turnover (not extreme values but consistently high over time)",
+    "margin": "Generally low margin",
+    "success_rate": "1 out of 174 backtests produced a submittable single data field Alpha",
+    "signal_quality": "Remaining alphas show clear signals, proving template versatility on nws77 dataset"
+  },
+  "alternative_decay_functions": [
+    "jump_decay",
+    "ts_decay_exp_window(x, d, factor = f)"
+  ],
+  "region_config": {
+    "region": "EUR",
+    "universe": "TOP2500", 
+    "delay": 1,
+    "neutralization_options": ["INDUSTRY", "SUBINDUSTRY", "SECTOR", "NONE"]
+  }
+}

@@ -141,6 +141,7 @@ class TemplateResult:
     success: bool = False
     error_message: str = ""
     neutralization: str = "INDUSTRY"  # Track neutralization used
+    alpha_id: str = ""  # Track alpha ID for post-simulation analysis (optional)
     timestamp: float = 0.0
 
 class MultiArmBandit:
@@ -447,6 +448,10 @@ class EnhancedTemplateGeneratorV2:
         self.active_futures = {}  # Track active Future objects
         self.future_start_times = {}  # Track when futures were started
         self.future_timeout = 300  # 5 minutes timeout for hanging futures
+        self.thread_termination_log = []  # Track thread terminations
+        self.thread_exception_count = 0  # Count unexpected thread terminations
+        self.thread_count = 0  # Track total thread count
+        self.completed_threads = 0  # Track completed threads
         self.completed_count = 0
         self.successful_count = 0
         self.failed_count = 0
@@ -461,6 +466,26 @@ class EnhancedTemplateGeneratorV2:
         self.optimization_queue = []  # Queue of alphas to optimize
         self.optimization_results = {}  # Track optimization history
         self.max_optimization_iterations = 10
+        
+        # Initialize persona system
+        self.personas = self._load_personas()
+        self.recent_personas = []  # Track recently used personas
+        
+        # Load historical alpha expressions for inspiration from local file
+        logger.info("📚 Loading historical alphas from local JSON file...")
+        self.historical_alphas = self._load_historical_alphas()
+        
+        # Cache historical alphas to avoid repeated API calls
+        if self.historical_alphas:
+            logger.info(f"✅ Cached {len(self.historical_alphas)} historical alphas for reuse")
+        else:
+            logger.warning("⚠️ No historical alphas loaded - will use personas only")
+            # Set a flag to use personas more frequently when historical alphas are unavailable
+            self.use_personas_only = True
+        
+        # Rate limiting for API calls (30 requests per minute)
+        self.last_api_call_time = 0
+        self.api_call_interval = 2.1  # 2.1 seconds between calls (30 calls per minute = 2 seconds, plus buffer)
         
         # Three-phase system tracking
         self.total_simulations = 0
@@ -668,7 +693,19 @@ class EnhancedTemplateGeneratorV2:
             raise
     
     def make_api_request(self, method: str, url: str, **kwargs):
-        """Make API request with automatic 401 reauthentication"""
+        """Make API request with automatic 401 reauthentication and rate limiting"""
+        # Rate limiting: ensure minimum interval between API calls
+        import time
+        current_time = time.time()
+        time_since_last_call = current_time - self.last_api_call_time
+        
+        if time_since_last_call < self.api_call_interval:
+            wait_time = self.api_call_interval - time_since_last_call
+            logger.info(f"⏳ Rate limiting: waiting {wait_time:.2f} seconds before API call")
+            time.sleep(wait_time)
+        
+        self.last_api_call_time = time.time()
+        
         max_retries = 2
         
         for attempt in range(max_retries):
@@ -679,6 +716,8 @@ class EnhancedTemplateGeneratorV2:
                     response = self.sess.post(url, **kwargs)
                 elif method.upper() == 'PUT':
                     response = self.sess.put(url, **kwargs)
+                elif method.upper() == 'PATCH':
+                    response = self.sess.patch(url, **kwargs)
                 elif method.upper() == 'DELETE':
                     response = self.sess.delete(url, **kwargs)
                 else:
@@ -709,7 +748,7 @@ class EnhancedTemplateGeneratorV2:
     def load_operators(self) -> List[Dict]:
         """Load operators from operatorRAW.json"""
         try:
-            with open('operatorRAW.json', 'r') as f:
+            with open('operatorRAW.json', 'r', encoding='utf-8') as f:
                 operators = json.load(f)
             logger.info(f"Loaded {len(operators)} operators")
             return operators
@@ -1251,6 +1290,7 @@ Generate 3 PROFITABLE optimized alpha expressions:"""
                         longCount=longCount,
                         shortCount=shortCount,
                         success=True,
+                        alpha_id=alpha_id,
                         timestamp=time.time()
                     )
                 elif status in ['FAILED', 'ERROR']:
@@ -1380,8 +1420,8 @@ Generate 3 PROFITABLE optimized alpha expressions:"""
             fitness = template.get('fitness', 0)
             margin = template.get('margin', 0)
             
-            # Only consider templates that meet the high bar
-            if (sharpe > 1.25 and fitness > 1.0 and margin > 0.05):
+            # Only consider templates that meet the high bar (5 bps = 0.0005)
+            if (sharpe > 1.25 and fitness > 1.0 and margin > 0.0005):
                 qualifying_templates.append(template)
                 qualifying_indices.append(i)
         
@@ -1417,7 +1457,7 @@ Generate 3 PROFITABLE optimized alpha expressions:"""
         
         # Choose a different region for dataset substitution
         original_region = selected_template['region']
-        available_regions = [r for r in self.regions if r != original_region]
+        available_regions = [r for r in self.active_regions if r != original_region]
         target_region = random.choice(available_regions)
         
         # Get data fields for the target region and shuffle them
@@ -1445,7 +1485,7 @@ Generate 3 PROFITABLE optimized alpha expressions:"""
     def _generate_exploitation_fallback_template(self) -> Dict:
         """Generate a new template using pure Ollama when no existing templates meet exploitation criteria"""
         # Choose a random region for template generation
-        target_region = random.choice(self.regions)
+        target_region = random.choice(self.active_regions)
         
         # Get data fields for the target region
         optimal_delay = self.select_optimal_delay(target_region)
@@ -1742,7 +1782,7 @@ Generate 3 PROFITABLE optimized alpha expressions:"""
         """Load blacklisted operators from JSON file"""
         try:
             if os.path.exists('operator_blacklist.json'):
-                with open('operator_blacklist.json', 'r') as f:
+                with open('operator_blacklist.json', 'r', encoding='utf-8') as f:
                     blacklist_data = json.load(f)
                     blacklisted_operators = blacklist_data.get('blacklisted_operators', [])
                     logger.info(f"📋 Loaded {len(blacklisted_operators)} blacklisted operators: {blacklisted_operators}")
@@ -1994,8 +2034,8 @@ Generate 3 PROFITABLE optimized alpha expressions:"""
                 logger.warning(f"❌ No fields selected for template {i+1}")
                 continue
             
-            # Step 2: Choose operators
-            selected_operators = self._choose_operators_step(region, selected_fields)
+            # Step 2: Choose operators (with exploitation hook)
+            selected_operators = self._choose_operators_step_with_exploitation(region, selected_fields, i)
             if not selected_operators:
                 logger.warning(f"❌ No operators selected for template {i+1}")
                 continue
@@ -2066,15 +2106,49 @@ Generate 3 PROFITABLE optimized alpha expressions:"""
             logger.warning(f"🔧 Using {len(region_specific_fields)} region-specific fields for {region}")
             data_fields = region_specific_fields
         
-        # PRIORITIZE LOW USAGE FIELDS: Sort by usage to prefer underused fields
+        # BALANCED FIELD SELECTION: Mix of high-usage and low-usage fields
         def get_usage_score(field):
             user_count = field.get('userCount', 0)
             alpha_count = field.get('alphaCount', 0)
-            # Lower usage = better score (we want underused fields)
             return user_count + alpha_count
         
-        # Sort by usage score (ascending - lowest usage first)
+        # Categorize fields by usage
         data_fields.sort(key=get_usage_score)
+        total_fields = len(data_fields)
+        
+        # Define usage categories
+        low_usage_fields = data_fields[:total_fields//3]  # Bottom third (lowest usage)
+        medium_usage_fields = data_fields[total_fields//3:2*total_fields//3]  # Middle third
+        high_usage_fields = data_fields[2*total_fields//3:]  # Top third (highest usage)
+        
+        # Randomly decide selection strategy (30% chance for all high-usage, 70% for balanced)
+        import random
+        selection_strategy = random.choice(['balanced', 'balanced', 'balanced', 'all_high_usage'])
+        
+        if selection_strategy == 'all_high_usage':
+            # Sometimes select all high-usage fields to stir things up
+            selected_fields = high_usage_fields[:30] if len(high_usage_fields) >= 30 else high_usage_fields
+            logger.info(f"🎯 HIGH-USAGE STRATEGY: Selected {len(selected_fields)} high-usage fields")
+        else:
+            # Balanced selection: mix of low, medium, and high usage fields
+            # 40% low-usage, 40% medium-usage, 20% high-usage
+            low_count = min(12, len(low_usage_fields))  # 40% of 30 fields
+            medium_count = min(12, len(medium_usage_fields))  # 40% of 30 fields  
+            high_count = min(6, len(high_usage_fields))  # 20% of 30 fields
+            
+            # Randomly select from each category
+            selected_low = random.sample(low_usage_fields, low_count) if low_usage_fields else []
+            selected_medium = random.sample(medium_usage_fields, medium_count) if medium_usage_fields else []
+            selected_high = random.sample(high_usage_fields, high_count) if high_usage_fields else []
+            
+            selected_fields = selected_low + selected_medium + selected_high
+            # Shuffle to mix the categories
+            random.shuffle(selected_fields)
+            
+            logger.info(f"🎯 BALANCED STRATEGY: {len(selected_low)} low-usage, {len(selected_medium)} medium-usage, {len(selected_high)} high-usage fields")
+        
+        # Use the selected fields for the prompt
+        data_fields = selected_fields[:30]  # Limit to 30 fields for the prompt
         
         # Log usage statistics for debugging
         usage_stats = []
@@ -2083,8 +2157,7 @@ Generate 3 PROFITABLE optimized alpha expressions:"""
             alpha_count = field.get('alphaCount', 0)
             usage_stats.append(f"{field['id']}: users={user_count}, alphas={alpha_count}")
         
-        logger.info(f"📊 USAGE-BASED PRIORITIZATION: Preferring low-usage fields")
-        logger.info(f"📊 TOP 10 LOW-USAGE FIELDS: {usage_stats[:5]}")
+        logger.info(f"📊 SELECTED FIELDS: {usage_stats[:5]}")
         
         # Create field selection prompt with indexed list
         fields_desc = []
@@ -2108,15 +2181,16 @@ Generate 3 PROFITABLE optimized alpha expressions:"""
 
 Choose 2-4 data fields by selecting their INDEX NUMBERS from the list below:
 
-AVAILABLE DATA FIELDS (sorted by usage - lowest usage first):
+AVAILABLE DATA FIELDS (balanced mix of usage levels):
 {chr(10).join(fields_desc)}
 
 INSTRUCTIONS:
 - Choose 2-4 fields by their INDEX NUMBERS (e.g., [0, 1, 4])
-- PRIORITIZE LOW-USAGE FIELDS: Prefer fields with low userCount and alphaCount
-- High usage fields (high userCount/alphaCount) have high production correlation and won't add value
+- BALANCED APPROACH: Mix of low-usage, medium-usage, and high-usage fields
+- Low-usage fields offer discovery potential but may be less reliable
+- High-usage fields are proven but may have lower alpha potential
 - Mix different field types: VECTOR fields need Cross Sectional operators, MATRIX fields need Time Series operators
-- Consider at least one underused field for better alpha potential
+- Consider the trade-off between discovery potential and reliability
 - Return ONLY the index numbers in square brackets
 
 RESPONSE FORMAT:
@@ -2162,54 +2236,60 @@ RESPONSE FORMAT:
             logger.error(f"❌ STEP 1 FAILED: {e}")
             return []
     
+    def _choose_operators_step_with_exploitation(self, region: str, selected_fields: List[Dict], template_index: int) -> List[Dict]:
+        """Choose operators with weighted exploitation hook - can use successful template operators"""
+        # 30% chance to use exploitation from successful templates
+        if random.random() < 0.3 and template_index > 0:  # Don't exploit on first template
+            successful_templates = self._get_successful_templates()
+            if successful_templates:
+                # Use weighted selection to pick one template for exploitation
+                performance_weights = []
+                for template in successful_templates:
+                    # Use Sharpe ratio as the weight (higher Sharpe = higher weight)
+                    weight = max(template.get('sharpe', 0), 0.1)  # Minimum weight of 0.1
+                    performance_weights.append(weight)
+                
+                # Weighted random selection for one template
+                total_weight = sum(performance_weights)
+                probabilities = [w / total_weight for w in performance_weights]
+                selected_idx = random.choices(range(len(successful_templates)), weights=probabilities)[0]
+                template_to_exploit = successful_templates[selected_idx]
+                
+                logger.info(f"🎯 EXPLOITATION HOOK: Using operators from template (Sharpe: {template_to_exploit.get('sharpe', 0):.3f}, Weight: {probabilities[selected_idx]:.3f})")
+                
+                # Extract operators from the successful template
+                template_text = template_to_exploit.get('template', '')
+                exploited_operators = self.extract_operators_from_template(template_text)
+                
+                if exploited_operators:
+                    # Convert to operator dicts for compatibility
+                    operator_dicts = []
+                    for op_name in exploited_operators:
+                        # Find operator info
+                        for op in self.operators:
+                            if op['name'] == op_name:
+                                operator_dicts.append(op)
+                                break
+                    
+                    if operator_dicts:
+                        logger.info(f"🎯 EXPLOITATION HOOK: Using {len(operator_dicts)} operators from successful template")
+                        return operator_dicts
+        
+        # Fall back to normal operator selection
+        return self._choose_operators_step(region, selected_fields)
+    
     def _choose_operators_step(self, region: str, selected_fields: List[Dict]) -> List[Dict]:
         """Step 2: Let Ollama choose operators based on selected fields"""
         logger.info(f"⚙️ STEP 2: Choosing operators for {len(selected_fields)} fields")
         
-        # Analyze field types
+        # Analyze field types for logging purposes only
         vector_fields = [f for f in selected_fields if f.get('type') == 'VECTOR']
         matrix_fields = [f for f in selected_fields if f.get('type') == 'MATRIX']
-        regular_fields = [f for f in selected_fields if f.get('type') == 'REGULAR']
         
-        # Get compatible operators dynamically based on field types and operator scope
-        compatible_operators = []
+        logger.info(f"📊 FIELD ANALYSIS: {len(vector_fields)} VECTOR, {len(matrix_fields)} MATRIX fields")
         
-        # Get field types present in selected fields
-        field_types = set()
-        if vector_fields:
-            field_types.add('VECTOR')
-        if matrix_fields:
-            field_types.add('MATRIX')
-        if regular_fields:
-            field_types.add('REGULAR')
-        
-        # Dynamically determine compatible operators based on field types and operator category
-        for op in self.operators:
-            op_scope = op.get('scope', [])
-            op_category = op.get('category', '')
-            
-            # Check if operator is compatible with any of the field types
-            is_compatible = False
-            
-            # VECTOR fields: Allow all operators, but replace field if incompatible
-            if 'VECTOR' in field_types:
-                is_compatible = True
-            
-            # MATRIX fields: Use Time Series operators and Vector operators
-            if 'MATRIX' in field_types:
-                if op_category == 'Time Series' or op_category == 'Vector':
-                    is_compatible = True
-            
-            # REGULAR fields: Use all operators (Arithmetic, Logical, Time Series, Cross Sectional, Vector, Transformational, Group)
-            if 'REGULAR' in field_types:
-                if op_category in ['Arithmetic', 'Logical', 'Time Series', 'Cross Sectional', 'Vector', 'Transformational', 'Group']:
-                    is_compatible = True
-            
-            if is_compatible:
-                compatible_operators.append(op)
-        
-        # Remove duplicates
-        compatible_operators = list({op['name']: op for op in compatible_operators}.values())
+        # Allow ALL operators - we'll handle field compatibility later during template validation
+        compatible_operators = self.operators.copy()
         
         # CRITICAL: Filter out blacklisted operators
         if self.operator_blacklist:
@@ -2225,26 +2305,32 @@ RESPONSE FORMAT:
             return []
         
         # Create operator selection prompt with indexed list
+        # Randomly select 15 operators for variety
+        import random
+        selected_operators = random.sample(compatible_operators, min(15, len(compatible_operators)))
+        logger.info(f"🎲 RANDOM OPERATOR SELECTION: {[op['name'] for op in selected_operators]}")
+        
         operators_desc = []
-        for i, op in enumerate(compatible_operators[:20]):  # Show first 20 compatible operators with indices
+        for i, op in enumerate(selected_operators):
             operators_desc.append(f"[{i}] {op['name']}: {op['description']}")
         
         prompt = f"""
 ⚙️ OPERATOR SELECTION FOR {region.upper()}
 
-Based on your selected fields, choose 2-4 compatible operators by selecting their INDEX NUMBERS:
+Choose 2-4 operators by selecting their INDEX NUMBERS:
 
 SELECTED FIELDS:
 {chr(10).join([f"- {f['id']} ({f.get('type', 'REGULAR')})" for f in selected_fields])}
 
-COMPATIBLE OPERATORS:
+AVAILABLE OPERATORS:
 {chr(10).join(operators_desc)}
 
 INSTRUCTIONS:
 - Choose 2-4 operators by their INDEX NUMBERS (e.g., [0, 1, 4])
-- VECTOR fields need Cross Sectional operators (normalize, quantile, rank, scale, winsorize, zscore)
-- MATRIX fields need Time Series operators (ts_rank, ts_delta, ts_mean, ts_std, ts_corr, ts_regression, vec_avg, vec_sum, vec_max, vec_min)
-- Mix different operator types for interesting combinations
+- Valid indices are 0-14 (15 operators available)
+- Select operators that create interesting and diverse combinations
+- Mix different operator types for variety
+- Field compatibility will be handled automatically
 - Return ONLY the index numbers in square brackets
 
 RESPONSE FORMAT:
@@ -2272,19 +2358,23 @@ RESPONSE FORMAT:
             if bracket_match:
                 indices_str = bracket_match.group(1)
                 indices = [int(x.strip()) for x in indices_str.split(',') if x.strip().isdigit()]
+                logger.info(f"🔍 PARSED BRACKET INDICES: {indices}")
             else:
                 # Try to find individual numbers
                 numbers = re.findall(r'\b(\d+)\b', content)
-                indices = [int(x) for x in numbers if int(x) < len(compatible_operators[:20])]
+                indices = [int(x) for x in numbers if int(x) < len(selected_operators)]
+                logger.info(f"🔍 PARSED NUMBER INDICES: {indices}")
             
-            # Get selected operators by index
-            selected_operators = []
+            logger.info(f"🔍 FINAL INDICES: {indices}")
+            
+            # Get selected operators by index from the randomly selected operators
+            final_selected_operators = []
             for idx in indices:
-                if 0 <= idx < len(compatible_operators[:20]):
-                    selected_operators.append(compatible_operators[idx])
+                if 0 <= idx < len(selected_operators):
+                    final_selected_operators.append(selected_operators[idx])
             
-            logger.info(f"⚙️ STEP 2 COMPLETE: Selected {len(selected_operators)} operators: {[op['name'] for op in selected_operators]}")
-            return selected_operators
+            logger.info(f"⚙️ STEP 2 COMPLETE: Selected {len(final_selected_operators)} operators: {[op['name'] for op in final_selected_operators]}")
+            return final_selected_operators
             
         except Exception as e:
             logger.error(f"❌ STEP 2 FAILED: {e}")
@@ -2295,12 +2385,39 @@ RESPONSE FORMAT:
         logger.info(f"🔨 STEP 3: Building template with {len(selected_fields)} fields and {len(selected_operators)} operators")
         
         # CRITICAL: Validate that all selected fields are region-specific
+        cross_region_fields = []
         for field in selected_fields:
             field_region = field.get('region', '')
             if field_region != region:
+                cross_region_fields.append(field)
                 logger.error(f"🚨 CROSS-REGION FIELD IN TEMPLATE: {field.get('id', 'UNKNOWN')} from {field_region} used in {region}")
                 logger.error(f"🚨 This will cause 'unknown variable' errors in simulation!")
-                # Continue anyway, but log the issue
+        
+        if cross_region_fields:
+            logger.warning(f"🔄 CROSS-REGION CONTAMINATION DETECTED: Found {len(cross_region_fields)} cross-region fields")
+            logger.warning(f"🔄 Cross-region fields: {[f.get('id', 'UNKNOWN') for f in cross_region_fields]}")
+            logger.info(f"🔄 REGENERATING TEMPLATE: Using correct region {region} and optimal delay")
+            
+            # Get fresh fields for the target region with optimal delay
+            optimal_delay = self.select_optimal_delay(region)
+            fresh_fields = self.get_data_fields_for_region(region, optimal_delay)
+            
+            if not fresh_fields:
+                logger.error(f"❌ NO FRESH FIELDS: Cannot regenerate template for {region}")
+                return None
+            
+            # Filter out any remaining cross-region fields
+            region_specific_fields = [f for f in fresh_fields if f.get('region', '') == region]
+            
+            if len(region_specific_fields) == 0:
+                logger.error(f"❌ NO REGION-SPECIFIC FIELDS: All fresh fields are cross-region for {region}")
+                return None
+            
+            logger.info(f"✅ REGENERATION: Using {len(region_specific_fields)} region-specific fields for {region}")
+            
+            # Update selected_fields with region-specific fields
+            selected_fields = region_specific_fields[:len(selected_fields)]  # Keep same count
+            logger.info(f"🔄 REGENERATED FIELDS: {[f['id'] for f in selected_fields]}")
         
         # Create template building prompt
         fields_info = []
@@ -2313,10 +2430,40 @@ RESPONSE FORMAT:
         
         operators_info = []
         for op in selected_operators:
-            operators_info.append(f"- {op['name']}: {op['description']}")
+            definition = op.get('definition', 'No definition available')
+            operators_info.append(f"- {op['name']}: {op['description']} | Syntax: {definition}")
+        
+        # 60% real examples, 40% personas - randomly choose inspiration type
+        import random
+        use_real_examples = random.random() < 0.6
+        
+        if use_real_examples:
+            # 60% chance: Use historical alpha examples
+            historical_alphas = self._select_historical_alphas(3)
+            historical_examples = ""
+            if historical_alphas:
+                historical_examples = "\n\nHISTORICAL ALPHA EXAMPLES FOR INSPIRATION:\n"
+                for i, alpha in enumerate(historical_alphas, 1):
+                    status_emoji = "✅" if alpha['status'] == 'SUBMITTED' else "📝" if alpha['status'] == 'UNSUBMITTED' else "❌"
+                    historical_examples += f"{i}. {alpha['expression']} {status_emoji} (Sharpe: {alpha['sharpe']:.2f}, Fitness: {alpha['fitness']:.2f}, Region: {alpha['region']}, Status: {alpha['status']})\n"
+                historical_examples += "\nUse these as inspiration but create your own unique expression using the selected fields and operators.\n"
+            
+            persona_prompt = ""  # No persona when using real examples
+            logger.info(f"📚 HISTORICAL ALPHAS: {historical_alphas}")
+            logger.info(f"📚 USING REAL EXAMPLES: Historical alphas for inspiration")
+        else:
+            # 40% chance: Use creative personas
+            persona = self._select_persona()
+            persona_prompt = self._get_persona_prompt(persona, 1)
+            historical_examples = ""  # No historical examples when using personas
+            logger.info(f"🎭 USING PERSONA: {persona['name']} - {persona['style']}")
         
         prompt = f"""
 🔨 ALPHA EXPRESSION BUILDER FOR {region.upper()}
+
+
+CREATE ALPHAS LIKE THIS:
+{persona_prompt}
 
 You are building a WorldQuant Brain alpha expression. This is NOT SQL - it's a mathematical expression using operators and data fields.
 
@@ -2325,26 +2472,19 @@ SELECTED FIELDS:
 
 SELECTED OPERATORS:
 {chr(10).join(operators_info)}
+{historical_examples}
 
 CRITICAL INSTRUCTIONS:
 - This is a MATHEMATICAL EXPRESSION, not SQL code
 - Use ONLY the selected fields and operators above
-- Follow field type compatibility rules:
-  * VECTOR fields: Can use any operators, but incompatible combinations will be fixed by replacing the field
-  * MATRIX fields: Use Time Series operators (ts_rank, ts_delta, ts_mean, ts_std, ts_corr, ts_regression) and Vector operators
-  * REGULAR fields: Use all operators (Cross Sectional, Time Series, Vector, Arithmetic, Logical, Transformational, Group)
-- Create a valid alpha expression like: normalize(close) + rank(volume)
+- Field compatibility will be handled automatically during validation
+- Create a valid alpha expression like above
 - Use proper syntax with balanced parentheses
 - Return ONLY the alpha expression, no explanations, no code blocks, no markdown
 - DO NOT include "plaintext" prefix or any other prefixes
-
-EXAMPLES OF VALID ALPHA EXPRESSIONS:
-- normalize(close) + rank(volume)  # Cross Sectional operators with any field type
-- ts_rank(close) + ts_delta(volume)  # Time Series operators with MATRIX fields
-- vec_avg(close) + vec_sum(volume)  # Vector operators with MATRIX fields
+- No words like 'math' or 'alpha expression' in the results, only the expression
 
 RESPONSE FORMAT (return only the expression, no prefixes):
-normalize(close) + rank(volume)
 """
         
         try:
@@ -2356,7 +2496,7 @@ normalize(close) + rank(volume)
             )
             
             template = response['message']['content'].strip()
-            
+
             # Clean up any SQL blocks or markdown that Ollama might generate
             if '```' in template:
                 # Extract content between code blocks
@@ -2367,7 +2507,15 @@ normalize(close) + rank(volume)
                 else:
                     # Remove the ``` wrapper
                     template = template.replace('```sql', '').replace('```python', '').replace('```javascript', '').replace('```', '').strip()
+            if template.startswith('markdown'):
+                template = template.split('markdown')[1].strip()
+            if template.startswith('alpha expression'):
+                template = template.split('alpha expression')[1].strip()
+            if template.startswith('math expression'):
+                template = template.split('math expression')[1].strip()
+
             
+
             # Remove any field descriptions or explanations
             lines = template.split('\n')
             alpha_lines = []
@@ -2416,14 +2564,19 @@ normalize(close) + rank(volume)
         data_fields = self.get_data_fields_for_region(region, delay)
         valid_fields = [field['id'] for field in data_fields] if data_fields else []
         
-        # Fix vector field issues with region-specific fields
-        fixed_template = self._fix_vector_field_issues(template, region, delay)
-        
-        # Check if there are still incompatible operators with VECTOR fields
-        if self._has_incompatible_vector_operators(fixed_template, region, delay):
-            logger.warning(f"🚨 INCOMPATIBLE OPERATORS DETECTED: Sending back to Ollama for field replacement")
-            # Send back to Ollama for field replacement
-            fixed_template = self._ollama_field_replacement(fixed_template, region, delay)
+        # NEW: Check for non-vec_* operators and replace VECTOR fields with MATRIX fields if found
+        if self._has_non_vec_operators(template):
+            logger.info(f"🔧 NON-VEC OPERATORS DETECTED: Replacing VECTOR fields with MATRIX fields")
+            fixed_template = self._replace_vector_fields_with_matrix_fields(template, region, delay)
+        else:
+            # Fix vector field issues with region-specific fields
+            fixed_template = self._fix_vector_field_issues(template, region, delay)
+            
+            # Check if there are still incompatible operators with VECTOR fields
+            if self._has_incompatible_vector_operators(fixed_template, region, delay):
+                logger.warning(f"🚨 INCOMPATIBLE OPERATORS DETECTED: Sending back to Ollama for field replacement")
+                # Send back to Ollama for field replacement
+                fixed_template = self._ollama_field_replacement(fixed_template, region, delay)
         
         # Track this template
         self._track_recent_template(fixed_template)
@@ -2431,851 +2584,7 @@ normalize(close) + rank(volume)
         logger.info(f"✅ STEP 4 COMPLETE: Template validated successfully")
         logger.info(f"🔧 FIXED TEMPLATE: {fixed_template}")
         return True, fixed_template
-    
-    def _create_gem_discovery_selection(self, data_fields: List[Dict], max_fields: int = 30) -> List[Dict]:
-        """Create a dynamic selection based on elite template discoveries and time"""
-        # Update field strategy before selection
-        self._update_field_strategy()
-        
-        # Get current strategy weights
-        weights = self.field_strategy_weights[self.field_strategy_mode]
-        
-        # Categorize fields by usage levels
-        use_unlimited_operators = random.choice([True, False])
-        
-        # Select operators based on the 50/50 chance
-        if region == "EUR":
-            max_operators = len(self.operators)  # Use all operators for EUR
-            selected_operators = self.operators  # Use all operators
-            logger.info(f"EUR region: Using ALL {len(selected_operators)} operators for Ollama-only generation")
-        else:
-            if use_unlimited_operators:
-                max_operators = len(self.operators)  # Use all operators
-                selected_operators = self.operators  # Use all operators
-                logger.info(f"🎲 OLLAMA-ONLY UNLIMITED operators: Using ALL {len(selected_operators)} operators for template generation")
-            else:
-                max_operators = random.randint(1, 4)
-                # Use underused operators to force diversity
-                selected_operators = self.get_underused_operators(max_operators)
-                logger.info(f"🎲 OLLAMA-ONLY LIMITED operators: Selected {len(selected_operators)} underused operators (max: {max_operators}) for template generation")
-        
-        # Define complexity constraints based on operator selection
-        if region == "EUR":
-            complexity_constraints = "TEMPLATE COMPLEXITY: NO LIMITS - Use any number of operators and data fields for maximum flexibility"
-        elif use_unlimited_operators:
-            complexity_constraints = "TEMPLATE COMPLEXITY: UNLIMITED OPERATORS - Use any number of operators for maximum complexity and potential"
-        else:
-            complexity_constraints = f"TEMPLATE COMPLEXITY CONSTRAINTS:\n- Maximum {max_operators} operators per template (for higher margin chances)"
-        
-        # CRITICAL: Filter out blacklisted operators from selected operators
-        filtered_operators = []
-        for op in selected_operators:
-            if not self._is_operator_blacklisted(op['name']):
-                filtered_operators.append(op)
-            else:
-                logger.warning(f"🚫 BLACKLIST ENFORCEMENT: Skipping blacklisted operator {op['name']}")
-        
-        if not filtered_operators:
-            logger.error(f"🚫 ALL SELECTED OPERATORS ARE BLACKLISTED! Using fallback operators...")
-            # Use any non-blacklisted operators as fallback
-            for op in self.operators:
-                if not self._is_operator_blacklisted(op['name']):
-                    filtered_operators.append(op)
-                    if len(filtered_operators) >= 5:  # Get at least 5 operators
-                        break
-        
-        selected_operators = filtered_operators
-        logger.info(f"🔧 BLACKLIST FILTER: {len(selected_operators)} operators available after blacklist filtering")
-        
-        # Create operators description
-        operators_desc = []
-        for op in selected_operators:
-            operators_desc.append(f"- {op['name']}: {op['description']} (Definition: {op['definition']})")
-        
-        # 50/25/25 CHANCE: Gem Discovery vs Prioritized fields vs Random fields
-        field_selection_mode = random.choices(
-            ["gem_discovery", "prioritized", "random"], 
-            weights=[50, 25, 25]
-        )[0]
-        
-        if field_selection_mode == "gem_discovery":
-            # NEW: Gem Discovery - Pair low usage gems with moderately used fields
-            selected_fields = self._create_gem_discovery_selection(data_fields, max_fields=30)
-            logger.info(f"💎 GEM DISCOVERY: Paired undiscovered gems with moderate fields for innovation")
-        elif field_selection_mode == "prioritized":
-            selected_fields = self._prioritize_fields(data_fields)
-            logger.info(f"🎯 FIELD SELECTION: Using prioritized fields (higher pyramid multipliers, lower usage)")
-        else:
-            # Use random fields
-            selected_fields = random.sample(data_fields, len(data_fields))
-            logger.info(f"🎲 FIELD SELECTION: Using random fields for diversity")
-        
-        # Create fields description from selected fields
-        fields_desc = []
-        for field in selected_fields[:20]:  # Show first 20 selected fields
-            pyramid_mult = field.get('pyramidMultiplier', 1.0)
-            user_count = field.get('userCount', 0)
-            alpha_count = field.get('alphaCount', 0)
-            field_type = field.get('type', 'REGULAR')
-            
-            # Add field type information with operator compatibility
-            if field_type == 'VECTOR':
-                field_type_info = "VECTOR (use Cross Sectional operators: normalize, quantile, rank, scale, winsorize, zscore, vec_avg, vec_sum, vec_max, vec_min)"
-            elif field_type == 'MATRIX':
-                field_type_info = "MATRIX (use Time Series operators: ts_rank, ts_delta, ts_mean, ts_std, ts_corr, ts_regression)"
-            else:
-                field_type_info = "REGULAR (use standard operators)"
-            
-            fields_desc.append(f"- {field['id']}: {field.get('description', 'No description')} [{field_type_info}] (pyramid: {pyramid_mult}, users: {user_count}, alphas: {alpha_count})")
-        
-        # Get real examples from submitted alphas for better reference
-        real_examples = self._get_real_alpha_examples()
-        
-        # Get blacklisted operators for the template
-        blacklisted_operators = self.load_operator_blacklist()
-        blacklist = f"🚫 BLACKLISTED OPERATORS - DO NOT USE THESE:\n{chr(10).join([f'- {op} (BLACKLISTED - DO NOT USE)' for op in blacklisted_operators])}" if blacklisted_operators else "🚫 BLACKLISTED OPERATORS: No operators currently blacklisted"
-        
-        # Get recent templates warning
-        recent_warning = self._get_recent_templates_warning()
-        
-        # 50/50 CHANCE: Unorthodox/Innovative vs Economic Significance focus
-        focus_innovative = random.choice([True, False])
-        
-        if focus_innovative:
-            focus_instruction = "UNORTHODOX & INNOVATIVE FOCUS"
-            logger.info(f"🎨 INNOVATION MODE: Focusing on unorthodox and innovative template generation")
-            focus_description = """🎨 INNOVATION REQUIREMENTS:
-1. Think outside the box - use unconventional operator combinations
-2. Explore novel field relationships and cross-correlations
-3. Experiment with complex nested operations and unusual parameter values
-4. Push the boundaries of traditional quantitative finance
-5. Create unique patterns that haven't been explored before
-6. Use creative mathematical relationships between different data types
-7. Combine seemingly unrelated fields in innovative ways
-8. Focus on originality and breakthrough thinking"""
-        else:
-            focus_instruction = "ECONOMIC SIGNIFICANCE FOCUS"
-            logger.info(f"📊 ECONOMIC MODE: Focusing on economic significance and market intuition")
-            focus_description = """📊 ECONOMIC INTUITION REQUIREMENTS:
-1. Focus on well-established financial anomalies and market inefficiencies
-2. Incorporate momentum, mean reversion, and cross-sectional effects
-3. Use time series patterns that capture market microstructure
-4. Include risk-adjusted returns and volatility considerations
-5. Leverage fundamental and technical analysis principles
-6. Focus on strategies that could generate alpha in real markets
-7. Consider transaction costs and market impact
-8. Use appropriate time horizons for the strategy type"""
-        
-        # Create an advanced prompt focused on the selected approach
-        prompt = f"""WORLDQUANT BRAIN ALPHA GENERATION EXPERT SYSTEM
-
-You are a REVOLUTIONARY quantitative finance AI that BREAKS CONVENTIONAL PATTERNS and creates INNOVATIVE alpha expressions. Your mission: Generate {num_templates} GROUNDBREAKING alpha expressions for the {region} region that will SHOCK the quantitative finance community with their creativity and innovation.
-
-🚀 INNOVATION MANDATE - THINK OUTSIDE THE BOX:
-- DO NOT create safe, predictable templates that everyone uses
-- PUSH BOUNDARIES with UNCONVENTIONAL operator combinations
-- Think like a DISRUPTIVE QUANT who challenges established methods
-- Create expressions that make other quants say "I never thought of that!"
-- Use operators in UNEXPECTED ways that reveal hidden market patterns
-- Focus on CREATIVE INSIGHTS, not memorized patterns
-
-MISSION CRITICAL SUCCESS FACTORS:
-- MAXIMIZE Sharpe ratio potential through INNOVATIVE approaches
-- MINIMIZE drawdown risk with CREATIVE risk management
-- OPTIMIZE for real-world trading conditions with UNCONVENTIONAL strategies
-- FOCUS on UNEXPLORED financial anomalies and market inefficiencies
-
-REGION INTELLIGENCE:
-- Region: {region} ({self._get_market_context(region)})
-- Universe: {config.universe}
-- Delay: {optimal_delay}
-- Market Focus: {self._get_market_context(region)}
-
-GENERATION FOCUS: {focus_instruction}
-{focus_description}
-
-OPERATOR ARSENAL - USE ONLY THESE WEAPONS:
-{chr(10).join(operators_desc)}
-
-{blacklist}
-
-⚠️ ABSOLUTELY FORBIDDEN: Do NOT use any of the blacklisted operators above!
-
-{recent_warning}
-
-DATA FIELD ARSENAL - USE THESE EXACT FIELDS:
-{chr(10).join(fields_desc)}
-
-{recent_warning}
-
-🔍 FIELD TYPE COMPATIBILITY GUIDE:
-- VECTOR fields: Cross-sectional data (analyst estimates, etc.) → Use Cross Sectional operators: normalize, quantile, rank, scale, winsorize, zscore
-- MATRIX fields: Time series data (price, volume, etc.) → Use Time Series operators: ts_rank, ts_delta, ts_mean, ts_std, ts_corr, ts_regression, vec_avg, vec_sum, vec_max, vec_min
-- REGULAR fields: Standard data fields → Use standard operators
-
-🚨 CRITICAL: Use the EXACT field names from the list above. NEVER use generic placeholders like "field", "field1", "field2", "DATA_FIELD1", etc.
-🚨 FORBIDDEN: "field", "field1", "field2", "DATA_FIELD1", "DATA_FIELD2", "field_name", "data_field"
-✅ REQUIRED: Use actual field names like "anl10_cpxff", "mdl23_bk_rev_stabil", "close", "volume", etc.
-⚠️ CRITICAL: Check field type in brackets [VECTOR/MATRIX/REGULAR] and use appropriate operators!
-
-📋 FIELD TYPE USAGE EXAMPLES:
-- VECTOR field example: normalize(anl4_guiafv4_est) ✅
-- MATRIX field example: ts_rank(anl10_bpsff, 20) ✅
-- REGULAR field example: ts_rank(close, 20) ✅
-- WRONG: ts_rank(anl4_guiafv4_est, 20) ❌ (VECTOR field with time series operator)
-- WRONG: normalize(close) ❌ (REGULAR field with cross-sectional operator)
-
-🔄 SMART FIELD REPLACEMENT:
-- If you want to use time series operators (ts_rank, ts_delta, ts_mean), use MATRIX fields instead of VECTOR fields
-- If you want to use cross-sectional operators (normalize, quantile, rank), use VECTOR fields
-- The system will automatically suggest compatible field replacements
-- Be creative: combine VECTOR and MATRIX fields in innovative ways!
-
-REAL WORLDQUANT BRAIN EXAMPLES FOR REFERENCE:
-{real_examples}
-
-{complexity_constraints}
-
-ULTRA-CRITICAL SYNTAX RULES - ZERO TOLERANCE FOR ERRORS:
-
-RULE #1: DATA FIELDS ARE NEVER OPERATORS - THEY ARE INPUTS!
-ABSOLUTELY FORBIDDEN - DATA FIELDS AS OPERATORS:
-- anl69_best_bps_stddev(anl69_best_bps_stddev(...)) FORBIDDEN
-- mdl23_bk_dra(mdl23_bk_rev_stabil(...)) FORBIDDEN
-- fnd23_field(ts_rank(...)) FORBIDDEN
-- any_data_field(any_expression) FORBIDDEN
-
-MANDATORY CORRECT SYNTAX - DATA FIELDS AS INPUTS:
-- ts_rank(anl69_best_bps_stddev, 20) CORRECT
-- ts_max(mdl23_bk_dra, 10) CORRECT
-- rank(fnd23_field) CORRECT
-- operator(data_field, parameters) CORRECT
-
-RULE #2: OPERATOR GRAMMAR - PERFECT SYNTAX REQUIRED:
-- operator(field, parameter) CORRECT
-- operator(field1, field2, parameter) CORRECT
-- NO comparison operators: >, <, >=, <=, ==, !=, &&, ||, % FORBIDDEN
-- NO missing commas between parameters FORBIDDEN
-- PERFECTLY balanced parentheses REQUIRED
-
-RULE #3: GROUP OPERATOR PARAMETERS - EXACT SPECIFICATION REQUIRED:
-- group_neutralize(field, industry) CORRECT   replace field with ACTUAL DATA FIELD ARSENAL!
-- group_zscore(field, subindustry) CORRECT replace field with ACTUAL DATA FIELD ARSENAL!
-- group_rank(field, market) CORRECT replace field with ACTUAL DATA FIELD ARSENAL!
-NEVER use generic "group" - always specify: industry, subindustry, sector, market
-
-RULE #4: VECTOR FIELD HANDLING - CRITICAL:
-- VECTOR fields are cross-sectional data - use Cross Sectional operators directly: normalize(field), quantile(field), rank(field), scale(field), winsorize(field), zscore(field)
-- VECTOR fields can use Vector operators: vec_avg(field), vec_sum(field), vec_max(field), vec_min(field)
-- Time series operators (ts_rank, ts_delta, ts_mean) CANNOT process VECTOR fields directly
-- CORRECT for VECTOR fields: normalize(field), quantile(field), rank(field), scale(field), winsorize(field), zscore(field)
-- WRONG for VECTOR fields: ts_rank(field, 20), ts_delta(field, 5), ts_mean(field, 10)
-
-ALPHA GENERATION STRATEGY - MAXIMUM PROFIT POTENTIAL:
-
-1. MOMENTUM STRATEGIES (High Sharpe potential):
-   - ts_rank(field, 20) - Price momentum  replace field with ACTUAL data_field!
-   - ts_delta(field, 5) - Short-term momentum   replace field with ACTUAL data_field!
-   - rank(field) - Cross-sectional momentum   replace field with ACTUAL data_field!
-   - YOUR IMAGINATION IS THE ONLY LIMIT
-
-2. MEAN REVERSION STRATEGIES (Risk-adjusted returns):
-   - ts_zscore(field, 60) - Statistical mean reversion  replace field with ACTUAL data_field!
-   - YOUR IMAGINATION IS THE ONLY LIMIT
-
-
-3. VOLATILITY STRATEGIES (Risk management):
-   - ts_std_dev(field, 20) - Volatility measurement   replace field with ACTUAL data_field!
-   - winsorize(field, 3) - Outlier management   replace field with ACTUAL data_field!
-   - scale(field) - Risk scaling  replace field with ACTUAL data_field!
-   - YOUR IMAGINATION IS THE ONLY LIMIT
-
-4. CROSS-SECTIONAL STRATEGIES (Alpha generation):
-   - group_neutralize(ts_rank(field, 20), industry) CORRECT  replace field with ACTUAL data_field!
-   - group_zscore(field, sector) CORRECT   replace field with ACTUAL data_field!
-   - group_rank(field, market) CORRECT   replace field with ACTUAL data_field!
-   - YOUR IMAGINATION IS THE ONLY LIMIT
-
-5. VECTOR FIELD STRATEGIES (Cross-sectional data):
-   - normalize(field) - Cross-sectional normalization  replace field with ACTUAL VECTOR data_field!
-   - quantile(field, driver=gaussian, sigma=1.0) - Quantile transformation  replace field with ACTUAL VECTOR data_field!
-   - rank(field, rate=2) - Cross-sectional ranking  replace field with ACTUAL VECTOR data_field!
-   - scale(field, scale=1, longscale=1, shortscale=1) - Risk scaling  replace field with ACTUAL VECTOR data_field!
-   - winsorize(field, std=4) - Outlier management  replace field with ACTUAL VECTOR data_field!
-   - zscore(field) - Z-score normalization  replace field with ACTUAL VECTOR data_field!
-   - vec_avg(field) - Vector averaging  replace field with ACTUAL VECTOR data_field!
-   - vec_sum(field) - Vector summation  replace field with ACTUAL VECTOR data_field!
-
-6. SOPHISTICATED COMBINATIONS (Maximum alpha):
-   - ts_rank(group_neutralize(ts_delta(field, 5), industry), 20)
-   - ts_corr(ts_rank(field1, 20), ts_rank(field2, 20), 60)
-   - YOUR IMAGINATION IS THE ONLY LIMIT
-
-OPERATOR CONSTRAINTS - MANDATORY COMPLIANCE:
-You MUST use ONLY these operators: {', '.join([op['name'] for op in selected_operators])}
-Each template MUST use at least one of these operators.
-Description: {chr(10).join([op['description'] for op in selected_operators])}
-
-PARAMETER GUIDELINES:
-- Time periods (d): 5, 10, 20, 60, 120, 252 (trading days)
-- Standard deviations: 1, 2, 3, 4
-- Percentiles: 0.1, 0.25, 0.5, 0.75, 0.9
-- Constants: 0, 1, 0.5, -1, 2
-
-ADVANCED ALPHA PATTERNS - MAXIMUM ALPHA POTENTIAL:
-
-1. MOMENTUM + NEUTRALIZATION:
-   - group_neutralize(ts_rank(field, 20), industry)
-   - group_neutralize(ts_delta(field, 5), sector)
-
-2. MEAN REVERSION + CROSS-SECTIONAL:
-   - group_zscore(ts_zscore(field, 60), subindustry)
-   - group_rank(ts_ratio(field1, field2), market)
-
-3. VOLATILITY + MOMENTUM:
-   - ts_rank(ts_std_dev(field, 20), 10)
-   - winsorize(ts_delta(field, 5), 3)
-
-4. SOPHISTICATED NESTED PATTERNS:
-   - ts_rank(group_neutralize(ts_delta(field, 5), industry), 20)
-   - ts_corr(ts_rank(field1, 20), ts_rank(field2, 20), 60)
-
-SUCCESS VALIDATION CHECKLIST:
-- Perfect syntax with balanced parentheses
-- Correct operator parameter counts
-- NO comparison operators (>, <, >=, <=, ==, !=, &&, ||, %)
-- NO missing commas between parameters
-- Realistic field names and appropriate parameters
-- Data fields as INPUTS, not operators
-- Group operators use correct group types (industry, sector, subindustry, market)
-- Vector fields properly wrapped with vec_avg() when needed
-
-🧠 BRUCE LEE PHILOSOPHY - "BE LIKE WATER":
-- Forget what you've learned - be fluid and adaptive
-- Learn the rules, then transcend them through innovation
-- Don't just follow patterns - CREATE new patterns
-- Think beyond conventional combinations: a + b, a - b, a * b, a / b
-- The combinations are ENDLESS - explore the infinite possibilities
-- Be like water - adapt to any field type, any operator combination
-- Sometimes the most powerful alphas come from unexpected combinations
-- Innovation happens when you break free from rigid thinking
-
-🚀 INNOVATION CHALLENGE:
-- Can you create a + b combinations that no one has thought of?
-- Can you find hidden relationships between seemingly unrelated fields?
-- Can you discover new mathematical relationships that generate alpha?
-- Can you combine operators in ways that surprise even the creators?
-- Can you find the "impossible" combinations that actually work?
-
-💡 CREATIVE THINKING PROMPTS:
-- What if you combined VECTOR and MATRIX fields in unexpected ways?
-- What if you used arithmetic operators (add, subtract, multiply, divide) with Cross Sectional operators?
-- What if you nested 3, 4, or even 5 operators deep?
-- What if you used power(), sqrt(), log(), exp() with field combinations?
-- What if you created ratios, differences, and products of different field types?
-- What if you used group operators with VECTOR fields in new ways?
-- What if you combined time series and cross-sectional thinking?
-- The possibilities are INFINITE - be like water and flow with creativity!
-
-FINAL REQUIREMENTS:
-1. Use ONLY the provided operators and fields exactly as listed
-2. Focus on economic intuition and market significance
-3. Combine multiple operators for sophisticated strategies
-4. Use appropriate time periods and parameters
-5. Ensure perfect syntax and balanced parentheses
-6. Generate {num_templates} diverse, profitable alpha expressions
-7. Each template must be immediately usable in WorldQuant Brain
-8. BE LIKE WATER - fluid, adaptive, and endlessly innovative!
-
-RESPONSE FORMAT - JSON ONLY:
-{{"templates": ["template1", "template2", "template3"]}}
-
-Generate {num_templates} GROUNDBREAKING alpha expressions in JSON format:"""
-
-        # Call Ollama API with retry mechanism
-        max_retries = 3
-        data_field_operator_errors = 0
-        
-        for attempt in range(max_retries):
-            response = self.call_ollama_api(prompt)
-            if response:
-                # Check if the response contains data fields as operators
-                if "anl69_best_bps_stddev(" in response or "mdl23_bk_dra(" in response or "fnd23_field(" in response:
-                    data_field_operator_errors += 1
-                    logger.error(f"🚨 DETECTED DATA FIELDS AS OPERATORS in response (attempt {attempt + 1})")
-                    if data_field_operator_errors >= 2:
-                        # If we've seen this error multiple times, use an even stronger prompt
-                        logger.error(f"🚨 MULTIPLE DATA FIELD OPERATOR ERRORS - Using ULTRA STRONG prompt")
-                        ultra_strong_prompt = f"""
-🚨 ULTRA CRITICAL WARNING! 🚨
-
-You have been generating templates with DATA FIELDS AS OPERATORS multiple times!
-This is COMPLETELY WRONG and will cause simulation failures!
-
-{complexity_constraints}
-
-🚨 CRITICAL RULE: DATA FIELDS ARE NEVER OPERATORS! 🚨
-
-❌ NEVER DO THIS - DATA FIELDS AS OPERATORS:
-- anl69_best_bps_stddev(anl69_best_bps_stddev(...)) ❌
-- mdl23_bk_dra(mdl23_bk_rev_stabil(...)) ❌
-- fnd23_field(ts_rank(...)) ❌
-- any_data_field(any_expression) ❌
-
-✅ ALWAYS DO THIS - DATA FIELDS AS INPUTS:
-- ts_rank(anl69_best_bps_stddev, 20) ✅
-- ts_max(mdl23_bk_dra, 10) ✅
-- rank(fnd23_field) ✅
-- operator(data_field, parameters) ✅
-
-Generate {num_templates} templates using ONLY these operators:
-{', '.join([op['name'] for op in selected_operators[:10]])}
-
-{blacklist}
-
-Use ONLY these data fields (NO OTHER FIELD NAMES ALLOWED):
-{', '.join([f['id'] for f in selected_fields[:20]])}
-
-CRITICAL: You MUST use ONLY the field names listed above. Do NOT invent or hallucinate any other field names!
-DO NOT use any data field names as operators! Use them as inputs to operators!
-DO NOT use generic "field" placeholders - use the ACTUAL field names from the list above!
-For example: ts_rank(mws36_key_event_confidence, 20) NOT ts_rank(field, 20)
-
-🎨 CREATIVE OUTPUT REQUIREMENTS:
-Each template should be a UNIQUE, INNOVATIVE alpha expression that:
-- Surprises even experienced quants with its creativity
-- Uses operators in unconventional but valid ways
-- Demonstrates deep understanding of market dynamics
-- Shows willingness to take calculated risks in expression design
-- Avoids boring, predictable patterns that everyone uses
-
-🧠 BRUCE LEE PHILOSOPHY - "BE LIKE WATER":
-- Forget what you've learned - be fluid and adaptive
-- Learn the rules, then transcend them through innovation
-- Don't just follow patterns - CREATE new patterns
-- Think beyond conventional combinations: a + b, a - b, a * b, a / b
-- The combinations are ENDLESS - explore the infinite possibilities
-- Be like water - adapt to any field type, any operator combination
-- Sometimes the most powerful alphas come from unexpected combinations
-- Innovation happens when you break free from rigid thinking
-
-🚀 INNOVATION CHALLENGE:
-- Can you create a + b combinations that no one has thought of?
-- Can you find hidden relationships between seemingly unrelated fields?
-- Can you discover new mathematical relationships that generate alpha?
-- Can you combine operators in ways that surprise even the creators?
-- Can you find the "impossible" combinations that actually work?
-
-💡 CREATIVE THINKING PROMPTS:
-- What if you combined VECTOR and MATRIX fields in unexpected ways?
-- What if you used arithmetic operators (add, subtract, multiply, divide) with Cross Sectional operators?
-- What if you nested 3, 4, or even 5 operators deep?
-- What if you used power(), sqrt(), log(), exp() with field combinations?
-- What if you created ratios, differences, and products of different field types?
-- What if you used group operators with VECTOR fields in new ways?
-- What if you combined time series and cross-sectional thinking?
-- The possibilities are INFINITE - be like water and flow with creativity!
-
-Remember: You are not here to be safe and conventional. You are here to REVOLUTIONIZE quantitative finance with your creativity!
-Be like water - fluid, adaptive, and endlessly innovative!
-
-Return JSON format: {{"templates": ["template1", "template2", "template3"]}}
-"""
-                        response = self.call_ollama_api(ultra_strong_prompt)
-                        if not response:
-                            continue
-                    else:
-                        continue
-                break
-            logger.warning(f"Ollama API attempt {attempt + 1} failed, retrying...")
-            time.sleep(2)
-        
-        if not response:
-            logger.error(f"Failed to get response from Ollama for region {region} after {max_retries} attempts")
-            return []
-        
-        # Parse and validate the JSON response with enhanced validation
-        templates = []
-        try:
-            response_data = json.loads(response)
-            
-            if 'templates' in response_data:
-                template_list = response_data['templates']
-            elif isinstance(response_data, list):
-                template_list = response_data
-            else:
-                logger.error("Invalid JSON format: expected 'templates' key or array")
-                return []
-            
-            for template in template_list:
-                if isinstance(template, str) and template.strip():
-                    template = template.strip()
-                    
-                    # CRITICAL: Check for blacklisted operators in template
-                    template_operators = self.extract_operators_from_template(template)
-                    blacklisted_operators_found = [op for op in template_operators if self._is_operator_blacklisted(op)]
-                    
-                    if blacklisted_operators_found:
-                        logger.error(f"🚫 BLACKLIST VIOLATION: Template contains blacklisted operators: {blacklisted_operators_found}")
-                        logger.error(f"   Template: {template}")
-                        logger.error(f"   REJECTING TEMPLATE - Ollama must generate without blacklisted operators!")
-                        continue  # Skip this template
-                    
-                    # CRITICAL: Check if operators exist in operatorRAW.json
-                    invalid_operators = []
-                    for op in template_operators:
-                        if not any(valid_op['name'] == op for valid_op in self.operators):
-                            invalid_operators.append(op)
-                    
-                    if invalid_operators:
-                        logger.warning(f"🚫 INVALID OPERATORS: Template uses operators not in operatorRAW.json: {invalid_operators}")
-                        logger.warning(f"   Template: {template}")
-                        logger.warning(f"   RETRYING with valid operators only...")
-                        
-                        # Retry with valid operators only - SIMPLIFIED
-                        retry_prompt = f"""Fix this template that has invalid operators: {template}
-
-Use ONLY these valid operators: {', '.join([op['name'] for op in selected_operators[:10]])}
-
-{blacklist}
-
-Generate 1 template using valid operators only.
-
-Return JSON: {{"templates": ["fixed_template"]}}"""
-                        try:
-                            logger.info(f"🔍 INVALID OPERATOR RETRY TRACE:")
-                            logger.info(f"   Original template: {template}")
-                            logger.info(f"   Invalid operators: {invalid_operators}")
-                            logger.info(f"   Retry prompt: {retry_prompt}")
-                            
-                            retry_response = self.call_ollama_api(retry_prompt)
-                            
-                            logger.info(f"🔍 INVALID OPERATOR RETRY RESPONSE DEBUG:")
-                            logger.info(f"   Retry response: {retry_response}")
-                            logger.info(f"   Retry response type: {type(retry_response)}")
-                            logger.info(f"   Retry response is None: {retry_response is None}")
-                            
-                            if retry_response:
-                                # Parse the retry response
-                                try:
-                                    retry_data = json.loads(retry_response)
-                                    if 'templates' in retry_data:
-                                        retry_template_list = retry_data['templates']
-                                    elif isinstance(retry_data, list):
-                                        retry_template_list = retry_data
-                                    else:
-                                        logger.error("Invalid retry JSON format")
-                                        continue
-                                    
-                                    # Use the first retry template
-                                    if retry_template_list and isinstance(retry_template_list[0], str):
-                                        retry_template = retry_template_list[0].strip()
-                                        
-                                        # Validate the retry template has only valid operators
-                                        retry_operators = self.extract_operators_from_template(retry_template)
-                                        retry_invalid_operators = [op for op in retry_operators if not any(valid_op['name'] == op for valid_op in self.operators)]
-                                        
-                                        if not retry_invalid_operators:
-                                            logger.info(f"✅ RETRY SUCCESS: Fixed invalid operators issue")
-                                            template = retry_template
-                                        else:
-                                            logger.error(f"❌ RETRY FAILED: Still has invalid operators {retry_invalid_operators}")
-                                            # Don't skip - use original template
-                                            logger.info(f"🔄 FALLBACK: Using original template after retry still has invalid operators")
-                                            # Continue with original template instead of skipping
-                                    else:
-                                        logger.error("No valid retry template found")
-                                        # Don't skip - use original template
-                                        logger.info(f"🔄 FALLBACK: Using original template after no valid retry found")
-                                        # Continue with original template instead of skipping
-                                        
-                                except json.JSONDecodeError as json_error:
-                                    logger.error(f"❌ RETRY JSON PARSE ERROR: {json_error}")
-                                    # Don't skip - use original template
-                                    logger.info(f"🔄 FALLBACK: Using original template after JSON parse error")
-                                    # Continue with original template instead of skipping
-                            else:
-                                logger.error(f"❌ RETRY API FAILED - will try again with different approach")
-                                logger.error(f"🔍 RETRY FAILURE DEBUG:")
-                                logger.error(f"   Retry response was: {retry_response}")
-                                logger.error(f"   Retry response type: {type(retry_response)}")
-                                logger.error(f"   Retry response is None: {retry_response is None}")
-                                
-                                # Don't skip - try a different retry strategy
-                                retry_prompt_simple = f"""Generate 1 alpha template using operators: {', '.join([op['name'] for op in selected_operators[:5]])}
-
-{blacklist}
-
-Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
-                                
-                                logger.info(f"🔍 SIMPLE RETRY DEBUG:")
-                                logger.info(f"   Simple retry prompt: {retry_prompt_simple}")
-                                
-                                try:
-                                    simple_retry = self.call_ollama_api(retry_prompt_simple)
-                                    logger.info(f"🔍 SIMPLE RETRY RESPONSE DEBUG:")
-                                    logger.info(f"   Simple retry response: {simple_retry}")
-                                    logger.info(f"   Simple retry response type: {type(simple_retry)}")
-                                    logger.info(f"   Simple retry response is None: {simple_retry is None}")
-                                    
-                                    if simple_retry:
-                                        retry_data = json.loads(simple_retry)
-                                        logger.info(f"   Parsed simple retry data: {retry_data}")
-                                        if 'templates' in retry_data and retry_data['templates']:
-                                            template = retry_data['templates'][0]
-                                            logger.info(f"✅ SIMPLE RETRY SUCCESS: Using fallback template")
-                                        else:
-                                            logger.error(f"❌ SIMPLE RETRY FAILED - using original template")
-                                    else:
-                                        logger.error(f"❌ SIMPLE RETRY API FAILED - using original template")
-                                except Exception as e:
-                                    logger.error(f"❌ SIMPLE RETRY ERROR: {e} - using original template")
-                                    logger.error(f"   Exception type: {type(e).__name__}")
-                                    logger.error(f"   Exception details: {str(e)}")
-                                # Continue with the original template instead of skipping
-                                
-                        except Exception as retry_error:
-                            logger.error(f"❌ RETRY ERROR: {retry_error}")
-                            # Don't skip - use a simple fallback template
-                            fallback_template = f"ts_rank({selected_fields[0]['id'] if selected_fields else 'close'}, 20)"
-                            logger.info(f"🔄 FALLBACK: Using simple template: {fallback_template}")
-                            template = fallback_template
-                            # Continue processing this template instead of skipping
-                    
-                    # CRITICAL: Check minimum operator count
-                    min_operators = 3 if not use_unlimited_operators else 1
-                    if len(template_operators) < min_operators:
-                        logger.warning(f"⚠️ INSUFFICIENT OPERATORS: Template has {len(template_operators)} operators, need at least {min_operators}")
-                        logger.warning(f"   Template: {template}")
-                        logger.warning(f"   RETRYING with stronger operator count requirement...")
-                        
-                        # Retry with stronger operator count requirement - SIMPLIFIED
-                        retry_prompt = f"""Fix this template that has too few operators: {template}
-
-It has {len(template_operators)} operators but needs at least {min_operators}.
-
-Use these operators: {', '.join([op['name'] for op in selected_operators[:10]])}
-
-{blacklist}
-
-Generate 1 template with at least {min_operators} operators.
-
-Return JSON: {{"templates": ["fixed_template"]}}"""
-                        try:
-                            logger.info(f"🔍 OPERATOR COUNT RETRY DEBUG:")
-                            logger.info(f"   Retry prompt: {retry_prompt}")
-                            
-                            retry_response = self.call_ollama_api(retry_prompt)
-                            
-                            logger.info(f"🔍 OPERATOR COUNT RETRY RESPONSE DEBUG:")
-                            logger.info(f"   Retry response: {retry_response}")
-                            logger.info(f"   Retry response type: {type(retry_response)}")
-                            logger.info(f"   Retry response is None: {retry_response is None}")
-                            
-                            if retry_response:
-                                # Parse the retry response
-                                try:
-                                    retry_data = json.loads(retry_response)
-                                    if 'templates' in retry_data:
-                                        retry_template_list = retry_data['templates']
-                                    elif isinstance(retry_data, list):
-                                        retry_template_list = retry_data
-                                    else:
-                                        logger.error("Invalid retry JSON format")
-                                        continue
-                                    
-                                    # Use the first retry template
-                                    if retry_template_list and isinstance(retry_template_list[0], str):
-                                        retry_template = retry_template_list[0].strip()
-                                        
-                                        # Validate the retry template has enough operators
-                                        retry_operators = self.extract_operators_from_template(retry_template)
-                                        if len(retry_operators) >= min_operators:
-                                            logger.info(f"✅ RETRY SUCCESS: Fixed operator count issue")
-                                            template = retry_template
-                                        else:
-                                            logger.error(f"❌ RETRY FAILED: Still has {len(retry_operators)} operators (need {min_operators})")
-                                            continue
-                                    else:
-                                        logger.error("No valid retry template found")
-                                        # Don't skip - use original template
-                                        logger.info(f"🔄 FALLBACK: Using original template after no valid retry found")
-                                        # Continue with original template instead of skipping
-                                        
-                                except json.JSONDecodeError as json_error:
-                                    logger.error(f"❌ RETRY JSON PARSE ERROR: {json_error}")
-                                    # Don't skip - use original template
-                                    logger.info(f"🔄 FALLBACK: Using original template after JSON parse error")
-                                    # Continue with original template instead of skipping
-                            else:
-                                logger.error(f"❌ RETRY API FAILED - will try again with different approach")
-                                logger.error(f"🔍 RETRY FAILURE DEBUG:")
-                                logger.error(f"   Retry response was: {retry_response}")
-                                logger.error(f"   Retry response type: {type(retry_response)}")
-                                logger.error(f"   Retry response is None: {retry_response is None}")
-                                
-                                # Don't skip - try a different retry strategy
-                                retry_prompt_simple = f"""Generate 1 alpha template using operators: {', '.join([op['name'] for op in selected_operators[:5]])}
-
-{blacklist}
-
-Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
-                                
-                                logger.info(f"🔍 SIMPLE RETRY DEBUG:")
-                                logger.info(f"   Simple retry prompt: {retry_prompt_simple}")
-                                
-                                try:
-                                    simple_retry = self.call_ollama_api(retry_prompt_simple)
-                                    logger.info(f"🔍 SIMPLE RETRY RESPONSE DEBUG:")
-                                    logger.info(f"   Simple retry response: {simple_retry}")
-                                    logger.info(f"   Simple retry response type: {type(simple_retry)}")
-                                    logger.info(f"   Simple retry response is None: {simple_retry is None}")
-                                    
-                                    if simple_retry:
-                                        retry_data = json.loads(simple_retry)
-                                        logger.info(f"   Parsed simple retry data: {retry_data}")
-                                        if 'templates' in retry_data and retry_data['templates']:
-                                            template = retry_data['templates'][0]
-                                            logger.info(f"✅ SIMPLE RETRY SUCCESS: Using fallback template")
-                                        else:
-                                            logger.error(f"❌ SIMPLE RETRY FAILED - using original template")
-                                    else:
-                                        logger.error(f"❌ SIMPLE RETRY API FAILED - using original template")
-                                except Exception as e:
-                                    logger.error(f"❌ SIMPLE RETRY ERROR: {e} - using original template")
-                                    logger.error(f"   Exception type: {type(e).__name__}")
-                                    logger.error(f"   Exception details: {str(e)}")
-                                # Continue with the original template instead of skipping
-                                
-                        except Exception as retry_error:
-                            logger.error(f"❌ RETRY ERROR: {retry_error}")
-                        continue
-                    
-                    # Enhanced validation with automatic fixing
-                    is_valid, fixed_template = self._validate_ollama_template(template)
-                    if is_valid:
-                        # Use the fixed template
-                        template = fixed_template
-                    else:
-                        # NO CRITICAL REJECTION - Let simulation handle validation
-                        if "Data fields used as operators" in fixed_template:
-                            logger.warning(f"⚠️ Data fields used as operators detected!")
-                            logger.warning(f"   Template: {template}")
-                            logger.warning(f"   Proceeding to simulation - let WorldQuant Brain validate")
-                    
-                    # CRITICAL: Check if Ollama generated generic field placeholders
-                    if 'field' in template.lower() and not any(actual_field in template for actual_field in [f['id'] for f in selected_fields[:20]]):
-                        logger.warning(f"🚨 OLLAMA GENERATED GENERIC FIELDS: {template[:100]}...")
-                        logger.warning(f"   Ollama is using generic 'field' instead of actual field names!")
-                        logger.warning(f"   Retrying with stronger prompt...")
-                        
-                        # Retry with much stronger prompt
-                        retry_prompt = f"""
-🚨 CRITICAL ERROR! 🚨
-
-You just generated a template with generic "field" placeholders instead of actual field names!
-This is COMPLETELY WRONG!
-
-You MUST use the ACTUAL field names from this list:
-{', '.join([f['id'] for f in selected_fields[:20]])}
-
-{blacklist}
-
-WRONG: ts_rank(field, 20)
-CORRECT: ts_rank(mws36_key_event_confidence, 20)
-
-WRONG: ts_corr(field1, field2, 20)  
-CORRECT: ts_corr(mws36_novelty, mws36_relevance, 20)
-
-Generate {num_templates} templates using ONLY these operators:
-{', '.join([op['name'] for op in selected_operators[:10]])}
-
-Use ONLY these data fields (NO OTHER FIELD NAMES ALLOWED):
-{', '.join([f['id'] for f in selected_fields[:20]])}
-
-CRITICAL: You MUST use ONLY the field names listed above. Do NOT invent or hallucinate any other field names!
-DO NOT use any data field names as operators! Use them as inputs to operators!
-DO NOT use generic "field" placeholders - use the ACTUAL field names from the list above!
-For example: ts_rank(mws36_key_event_confidence, 20) NOT ts_rank(field, 20)
-
-Return JSON format: {{"templates": ["template1", "template2", "template3"]}}
-"""
-                        try:
-                            retry_response = self.call_ollama_api(retry_prompt)
-                            if retry_response:
-                                # Parse the retry response
-                                try:
-                                    retry_data = json.loads(retry_response)
-                                    if 'templates' in retry_data:
-                                        retry_template_list = retry_data['templates']
-                                    elif isinstance(retry_data, list):
-                                        retry_template_list = retry_data
-                                    else:
-                                        logger.error("Invalid retry JSON format")
-                                        continue
-                                    
-                                    # Use the first retry template
-                                    if retry_template_list and isinstance(retry_template_list[0], str):
-                                        retry_template = retry_template_list[0].strip()
-                                    
-                                    # Validate the retry template
-                                    retry_valid, retry_fixed = self._validate_ollama_template(retry_template)
-                                    if retry_valid:
-                                        logger.info(f"✅ RETRY SUCCESS: Fixed generic field issue")
-                                        template = retry_fixed
-                                        is_valid = True
-                                    else:
-                                        logger.error(f"❌ RETRY FAILED: Still has issues: {retry_fixed}")
-                                        logger.error(f"🚨 SKIPPING TEMPLATE: Ollama is still generating generic fields")
-                                        continue
-                                except json.JSONDecodeError as json_error:
-                                    logger.error(f"❌ RETRY JSON PARSE ERROR: {json_error}")
-                                    # Don't skip - use original template
-                                    logger.info(f"🔄 FALLBACK: Using original template after JSON parse error")
-                                    # Continue with original template instead of skipping
-                                else:
-                                    logger.warning(f"⚠️ RETRY API FAILED - skipping this template")
-                                    continue
-                                    
-                        except Exception as retry_error:
-                            logger.error(f"❌ RETRY ERROR: {retry_error}")
-                        continue
-                    
-                    # Only calculate score if template is valid
-                    if is_valid:
-                        # Calculate appropriate score based on focus
-                        if focus_innovative:
-                            score = self._assess_innovation_score(template)
-                            score_type = "innovation_score"
-                        else:
-                            score = self._assess_economic_significance(template)
-                            score_type = "economic_score"
-                        
-                        # CRITICAL: Fix field name modifications (suffixes, prefixes, etc.)
-                        valid_fields = [field['id'] for field in data_fields]
-                        template = self._fix_field_name_modifications(template, valid_fields)
-                        
-                        templates.append({
-                            'region': region,
-                            'template': template,
-                            'operators_used': self.extract_operators_from_template(template),
-                            'fields_used': self._extract_fields_from_ollama_template(template),
-                            'ollama_only': True,
-                            'economic_significance': self._assess_economic_significance(template),
-                            'innovation_score': self._assess_innovation_score(template),
-                            'focus_mode': focus_instruction
-                        })
-                        logger.info(f"✅ Ollama-only template: {template[:50]}... ({score_type}: {score:.3f})")
-                    else:
-                        logger.warning(f"❌ Invalid Ollama-only template rejected: {template[:50]}...")
-                        
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON response: {e}")
-            return []
-        
-        logger.info(f"Generated {len(templates)} high-quality Ollama-only templates for region {region}")
-        return templates
-    
+  
     def _get_market_context(self, region: str) -> str:
         """ULTRA-ENHANCED market context for maximum alpha generation success"""
         contexts = {
@@ -4111,31 +3420,9 @@ RESPONSE FORMAT: Answer with only "YES" or "NO"
             return template
     
     def _get_compatible_operators_for_field_type(self, field_type: str) -> List[str]:
-        """Get compatible operators for a specific field type dynamically"""
-        compatible_ops = []
-        
-        for op in self.operators:
-            op_scope = op.get('scope', [])
-            op_category = op.get('category', '')
-            
-            is_compatible = False
-            
-            if field_type == 'VECTOR':
-                # VECTOR fields: Allow all operators, but replace field if incompatible
-                is_compatible = True
-            elif field_type == 'MATRIX':
-                # MATRIX fields: Use Time Series operators and Vector operators
-                if op_category == 'Time Series' or op_category == 'Vector':
-                    is_compatible = True
-            elif field_type == 'REGULAR':
-                # REGULAR fields: Use all operators
-                if op_category in ['Arithmetic', 'Logical', 'Time Series', 'Cross Sectional', 'Vector', 'Transformational', 'Group']:
-                    is_compatible = True
-            
-            if is_compatible and op['name'] not in self.operator_blacklist:
-                compatible_ops.append(op['name'])
-        
-        return compatible_ops
+        """Get all operators - field compatibility will be handled during validation"""
+        # Return all operator names - field compatibility will be handled during template validation
+        return [op['name'] for op in self.operators if op['name'] not in self.operator_blacklist]
 
     def _get_field_type(self, field_id: str) -> str:
         """Get field type from data fields cache"""
@@ -4213,18 +3500,17 @@ RESPONSE FORMAT: Answer with only "YES" or "NO"
         
         # Known operators that should be learned from
         known_operators = {
-            'ts_rank', 'ts_max', 'ts_min', 'ts_sum', 'ts_mean', 'ts_std_dev', 'ts_skewness', 'ts_kurtosis',
-            'ts_corr', 'ts_regression', 'ts_delta', 'ts_ratio', 'ts_product', 'ts_scale', 'ts_zscore',
-            'ts_lag', 'ts_lead', 'ts_arg_max', 'ts_arg_min', 'rank', 'add', 'subtract', 'multiply', 'divide',
-            'power', 'abs', 'sign', 'sqrt', 'log', 'exp', 'max', 'min', 'sum', 'mean', 'std', 'std_dev',
-            'corr', 'regression', 'delta', 'ratio', 'product', 'scale', 'zscore', 'lag', 'lead',
-            'group_neutralize', 'group_neutralize', 'group_zscore', 'group_rank', 'group_max', 'group_min',
-            'group_sum', 'group_mean', 'group_std', 'group_scale', 'group_backfill', 'group_forward_fill',
-            'vec_avg', 'vec_sum', 'vec_max', 'vec_min', 'vec_std', 'vec_rank', 'vec_scale',
-            'if_else', 'greater', 'less', 'greater_equal', 'less_equal', 'equal', 'not_equal',
-            'and', 'or', 'not', 'is_nan', 'is_finite', 'is_infinite', 'fill_na', 'forward_fill',
-            'backward_fill', 'clip', 'clip_lower', 'clip_upper', 'signed_power', 'inverse', 'inverse_sqrt',
-            'bucket', 'step', 'hump', 'days_from_last_change', 'ts_step', 'ts_bucket', 'ts_hump'
+            'abs', 'add', 'and', 'bucket', 'days_from_last_change', 'densify', 'divide', 'equal', 'greater',
+            'greater_equal', 'group_backfill', 'group_cartesian_product', 'group_max', 'group_mean', 'group_min',
+            'group_neutralize', 'group_rank', 'group_scale', 'group_zscore', 'hump', 'if_else', 'inverse',
+            'is_nan', 'jump_decay', 'kth_element', 'last_diff_value', 'less', 'less_equal', 'log', 'max',
+            'min', 'multiply', 'normalize', 'not', 'not_equal', 'or', 'power', 'quantile', 'rank', 'reverse',
+            'scale', 'scale_down', 'sign', 'signed_power', 'sqrt', 'subtract', 'to_nan', 'trade_when',
+            'ts_arg_max', 'ts_arg_min', 'ts_av_diff', 'ts_backfill', 'ts_corr', 'ts_count_nans', 'ts_covariance',
+            'ts_decay_linear', 'ts_delay', 'ts_delta', 'ts_max', 'ts_mean', 'ts_min', 'ts_product', 'ts_quantile',
+            'ts_rank', 'ts_regression', 'ts_scale', 'ts_std_dev', 'ts_step', 'ts_sum', 'ts_target_tvr_decay',
+            'ts_target_tvr_delta_limit', 'ts_zscore', 'vec_avg', 'vec_max', 'vec_min', 'vec_sum', 'vector_neut',
+            'winsorize', 'zscore'
         }
         
         # Extract operator names from the template
@@ -4262,18 +3548,17 @@ RESPONSE FORMAT: Answer with only "YES" or "NO"
         
         # Known operators that should be learned from
         known_operators = {
-            'ts_rank', 'ts_max', 'ts_min', 'ts_sum', 'ts_mean', 'ts_std_dev', 'ts_skewness', 'ts_kurtosis',
-            'ts_corr', 'ts_regression', 'ts_delta', 'ts_ratio', 'ts_product', 'ts_scale', 'ts_zscore',
-            'ts_lag', 'ts_lead', 'ts_arg_max', 'ts_arg_min', 'rank', 'add', 'subtract', 'multiply', 'divide',
-            'power', 'abs', 'sign', 'sqrt', 'log', 'exp', 'max', 'min', 'sum', 'mean', 'std', 'std_dev',
-            'corr', 'regression', 'delta', 'ratio', 'product', 'scale', 'zscore', 'lag', 'lead',
-            'group_neutralize', 'group_neutralize', 'group_zscore', 'group_rank', 'group_max', 'group_min',
-            'group_sum', 'group_mean', 'group_std', 'group_scale', 'group_backfill', 'group_forward_fill',
-            'vec_avg', 'vec_sum', 'vec_max', 'vec_min', 'vec_std', 'vec_rank', 'vec_scale',
-            'if_else', 'greater', 'less', 'greater_equal', 'less_equal', 'equal', 'not_equal',
-            'and', 'or', 'not', 'is_nan', 'is_finite', 'is_infinite', 'fill_na', 'forward_fill',
-            'backward_fill', 'clip', 'clip_lower', 'clip_upper', 'signed_power', 'inverse', 'inverse_sqrt',
-            'bucket', 'step', 'hump', 'days_from_last_change', 'ts_step', 'ts_bucket', 'ts_hump'
+            'abs', 'add', 'and', 'bucket', 'days_from_last_change', 'densify', 'divide', 'equal', 'greater',
+            'greater_equal', 'group_backfill', 'group_cartesian_product', 'group_max', 'group_mean', 'group_min',
+            'group_neutralize', 'group_rank', 'group_scale', 'group_zscore', 'hump', 'if_else', 'inverse',
+            'is_nan', 'jump_decay', 'kth_element', 'last_diff_value', 'less', 'less_equal', 'log', 'max',
+            'min', 'multiply', 'normalize', 'not', 'not_equal', 'or', 'power', 'quantile', 'rank', 'reverse',
+            'scale', 'scale_down', 'sign', 'signed_power', 'sqrt', 'subtract', 'to_nan', 'trade_when',
+            'ts_arg_max', 'ts_arg_min', 'ts_av_diff', 'ts_backfill', 'ts_corr', 'ts_count_nans', 'ts_covariance',
+            'ts_decay_linear', 'ts_delay', 'ts_delta', 'ts_max', 'ts_mean', 'ts_min', 'ts_product', 'ts_quantile',
+            'ts_rank', 'ts_regression', 'ts_scale', 'ts_std_dev', 'ts_step', 'ts_sum', 'ts_target_tvr_decay',
+            'ts_target_tvr_delta_limit', 'ts_zscore', 'vec_avg', 'vec_max', 'vec_min', 'vec_sum', 'vector_neut',
+            'winsorize', 'zscore'
         }
         
         # Extract operator names from the template
@@ -4287,10 +3572,1174 @@ RESPONSE FORMAT: Answer with only "YES" or "NO"
         for operator_name in valid_operators:
             self._learn_operator_success(operator_name, template)
     
-    def _validate_and_fix_template_fields(self, template: str, region: str, delay: int = None) -> str:
-        """Simple field validation - just return template as-is"""
-        logger.info(f"🔧 FIELD VALIDATION: Using template as-is for {region}")
+    def _has_arithmetic_operators(self, template: str) -> bool:
+        """Check if template contains arithmetic operators (+, -, *, /)"""
+        import re
+        
+        # Look for arithmetic operators in the template
+        arithmetic_pattern = r'[+\-*/]'
+        return bool(re.search(arithmetic_pattern, template))
+    
+    def _has_non_vec_operators(self, template: str) -> bool:
+        """Check if template contains any non-vec_* operators that require matrix fields"""
+        import re
+        
+        # List of vec_* operators that are compatible with VECTOR fields
+        vec_operators = {
+            'vec_avg', 'vec_sum', 'vec_max', 'vec_min'
+        }
+        
+        # Extract all function calls from template
+        function_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\('
+        matches = re.findall(function_pattern, template)
+        
+        # Check if any non-vec_* operators are present
+        for match in matches:
+            if not match.startswith('vec_') and match not in vec_operators:
+                logger.info(f"🔧 NON-VEC OPERATOR DETECTED: {match} - will replace VECTOR fields with MATRIX fields")
+                return True
+        
+        # Also check for arithmetic operators
+        arithmetic_pattern = r'[+\-*/]'
+        if re.search(arithmetic_pattern, template):
+            logger.info(f"🔧 ARITHMETIC OPERATORS DETECTED - will replace VECTOR fields with MATRIX fields")
+            return True
+        
+        return False
+    
+    def _has_vec_operators(self, template: str) -> bool:
+        """Check if template contains vec_* operators that require VECTOR fields"""
+        import re
+        
+        # List of vec_* operators that require VECTOR fields
+        vec_operators = {
+            'vec_avg', 'vec_sum', 'vec_max', 'vec_min'
+        }
+        
+        # Extract all function calls from template
+        function_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\('
+        matches = re.findall(function_pattern, template)
+        
+        # Check if any vec_* operators are present
+        for match in matches:
+            if match in vec_operators:
+                logger.info(f"🔧 VEC OPERATOR DETECTED: {match} - will replace MATRIX fields with VECTOR fields")
+                return True
+        
+        return False
+    
+    def _replace_matrix_fields_with_vector_fields(self, template: str, region: str, delay: int = None) -> str:
+        """Replace MATRIX fields with VECTOR fields when vec_* operators are present"""
+        import re
+        
+        # Get available VECTOR fields from the specific region cache
+        vector_fields = []
+        cache_file = f"data_fields_cache_{region}_{delay}.json"
+        
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, 'r', encoding='utf-8') as f:
+                    fields_data = json.load(f)
+                    for field in fields_data:
+                        if field.get('type') == 'VECTOR':
+                            vector_fields.append(field)
+                
+                # Sort by usage (lowest usage first) - prioritize underused fields
+                def get_usage_score(field):
+                    user_count = field.get('userCount', 0)
+                    alpha_count = field.get('alphaCount', 0)
+                    return user_count + alpha_count
+                
+                vector_fields.sort(key=get_usage_score)
+                logger.info(f"🔧 VEC OPERATORS DETECTED: Found {len(vector_fields)} VECTOR fields for MATRIX replacement in {region}")
+                
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to load {region} cache: {e}")
+                return template
+        
+        if not vector_fields:
+            logger.warning(f"⚠️ No VECTOR fields available for {region}")
+            return template
+        
+        # Get field types to identify MATRIX fields
+        field_types = {}
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, 'r', encoding='utf-8') as f:
+                    fields_data = json.load(f)
+                    for field in fields_data:
+                        field_types[field['id']] = field.get('type', 'REGULAR')
+            except:
+                pass
+        
+        # Find all fields in the template
+        field_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b'
+        all_words = re.findall(field_pattern, template)
+        
+        # Replace only MATRIX fields with VECTOR fields
+        replacement_count = 0
+        for word in all_words:
+            if word in field_types and field_types[word] == 'MATRIX' and replacement_count < len(vector_fields):
+                replacement_field = vector_fields[replacement_count]['id']
+                template = template.replace(word, replacement_field)
+                logger.info(f"🔧 MATRIX->VECTOR REPLACEMENT: {word} -> {replacement_field} (due to vec_* operators)")
+                replacement_count += 1
+        
+        if replacement_count == 0:
+            logger.info(f"🔧 NO MATRIX FIELDS FOUND FOR REPLACEMENT")
+        else:
+            logger.info(f"🔧 REPLACED {replacement_count} MATRIX fields with VECTOR fields due to vec_* operators")
+        
         return template
+    
+    def _replace_vector_fields_with_matrix_fields(self, template: str, region: str, delay: int = None) -> str:
+        """Replace VECTOR fields with MATRIX fields when non-vec_* operators are present"""
+        import re
+        
+        # Get available MATRIX fields from the specific region cache
+        matrix_fields = []
+        cache_file = f"data_fields_cache_{region}_{delay}.json"
+        
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, 'r') as f:
+                    fields_data = json.load(f)
+                    for field in fields_data:
+                        if field.get('type') == 'MATRIX':
+                            matrix_fields.append(field)
+                
+                # Apply balanced selection for matrix fields
+                def get_usage_score(field):
+                    user_count = field.get('userCount', 0)
+                    alpha_count = field.get('alphaCount', 0)
+                    return user_count + alpha_count
+                
+                # Sort and categorize matrix fields by usage
+                matrix_fields.sort(key=get_usage_score)
+                total_matrix_fields = len(matrix_fields)
+                
+                if total_matrix_fields > 0:
+                    # Define usage categories for matrix fields
+                    low_usage_matrix = matrix_fields[:total_matrix_fields//3]
+                    medium_usage_matrix = matrix_fields[total_matrix_fields//3:2*total_matrix_fields//3]
+                    high_usage_matrix = matrix_fields[2*total_matrix_fields//3:]
+                    
+                    # Randomly decide selection strategy (30% chance for all high-usage, 70% for balanced)
+                    import random
+                    selection_strategy = random.choice(['balanced', 'balanced', 'balanced', 'all_high_usage'])
+                    
+                    if selection_strategy == 'all_high_usage':
+                        # Sometimes select all high-usage matrix fields
+                        matrix_fields = high_usage_matrix[:30] if len(high_usage_matrix) >= 30 else high_usage_matrix
+                        logger.info(f"🔧 HIGH-USAGE MATRIX STRATEGY: Selected {len(matrix_fields)} high-usage MATRIX fields for VECTOR replacement")
+                    else:
+                        # Balanced selection for matrix fields
+                        low_count = min(12, len(low_usage_matrix))
+                        medium_count = min(12, len(medium_usage_matrix))
+                        high_count = min(6, len(high_usage_matrix))
+                        
+                        selected_low = random.sample(low_usage_matrix, low_count) if low_usage_matrix else []
+                        selected_medium = random.sample(medium_usage_matrix, medium_count) if medium_usage_matrix else []
+                        selected_high = random.sample(high_usage_matrix, high_count) if high_usage_matrix else []
+                        
+                        matrix_fields = selected_low + selected_medium + selected_high
+                        random.shuffle(matrix_fields)
+                        
+                        logger.info(f"🔧 BALANCED MATRIX STRATEGY: {len(selected_low)} low-usage, {len(selected_medium)} medium-usage, {len(selected_high)} high-usage MATRIX fields for VECTOR replacement")
+                
+                logger.info(f"🔧 NON-VEC OPERATORS DETECTED: Found {len(matrix_fields)} MATRIX fields for VECTOR replacement in {region}")
+                
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to load {region} cache: {e}")
+                return template
+        
+        if not matrix_fields:
+            logger.warning(f"⚠️ No MATRIX fields available for {region}")
+            return template
+        
+        # Get field types to identify VECTOR fields
+        field_types = {}
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, 'r') as f:
+                    fields_data = json.load(f)
+                    for field in fields_data:
+                        field_types[field['id']] = field.get('type', 'REGULAR')
+            except:
+                pass
+        
+        # Find all fields in the template
+        field_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b'
+        all_words = re.findall(field_pattern, template)
+        
+        # Replace only VECTOR fields with MATRIX fields
+        replacement_count = 0
+        for word in all_words:
+            if word in field_types and field_types[word] == 'VECTOR' and replacement_count < len(matrix_fields):
+                replacement_field = matrix_fields[replacement_count]['id']
+                template = template.replace(word, replacement_field)
+                logger.info(f"🔧 VECTOR->MATRIX REPLACEMENT: {word} -> {replacement_field} (due to non-vec_* operators)")
+                replacement_count += 1
+        
+        if replacement_count == 0:
+            logger.info(f"🔧 NO VECTOR FIELDS FOUND FOR REPLACEMENT")
+        else:
+            logger.info(f"🔧 REPLACED {replacement_count} VECTOR fields with MATRIX fields due to non-vec_* operators")
+        
+        return template
+    
+    def _replace_all_fields_with_matrix_fields(self, template: str, region: str, delay: int = None) -> str:
+        """Replace all data fields with matrix fields when arithmetic operators are present"""
+        import re
+        
+        # Get available MATRIX fields from the specific region cache
+        matrix_fields = []
+        cache_file = f"data_fields_cache_{region}_{delay}.json"
+        
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, 'r') as f:
+                    fields_data = json.load(f)
+                    for field in fields_data:
+                        if field.get('type') == 'MATRIX':
+                            matrix_fields.append(field)
+                
+                # Apply balanced selection for matrix fields
+                def get_usage_score(field):
+                    user_count = field.get('userCount', 0)
+                    alpha_count = field.get('alphaCount', 0)
+                    return user_count + alpha_count
+                
+                # Sort and categorize matrix fields by usage
+                matrix_fields.sort(key=get_usage_score)
+                total_matrix_fields = len(matrix_fields)
+                
+                if total_matrix_fields > 0:
+                    # Define usage categories for matrix fields
+                    low_usage_matrix = matrix_fields[:total_matrix_fields//3]
+                    medium_usage_matrix = matrix_fields[total_matrix_fields//3:2*total_matrix_fields//3]
+                    high_usage_matrix = matrix_fields[2*total_matrix_fields//3:]
+                    
+                    # Randomly decide selection strategy (30% chance for all high-usage, 70% for balanced)
+                    import random
+                    selection_strategy = random.choice(['balanced', 'balanced', 'balanced', 'all_high_usage'])
+                    
+                    if selection_strategy == 'all_high_usage':
+                        # Sometimes select all high-usage matrix fields
+                        matrix_fields = high_usage_matrix[:30] if len(high_usage_matrix) >= 30 else high_usage_matrix
+                        logger.info(f"🔧 HIGH-USAGE MATRIX STRATEGY: Selected {len(matrix_fields)} high-usage MATRIX fields")
+                    else:
+                        # Balanced selection for matrix fields
+                        low_count = min(12, len(low_usage_matrix))
+                        medium_count = min(12, len(medium_usage_matrix))
+                        high_count = min(6, len(high_usage_matrix))
+                        
+                        selected_low = random.sample(low_usage_matrix, low_count) if low_usage_matrix else []
+                        selected_medium = random.sample(medium_usage_matrix, medium_count) if medium_usage_matrix else []
+                        selected_high = random.sample(high_usage_matrix, high_count) if high_usage_matrix else []
+                        
+                        matrix_fields = selected_low + selected_medium + selected_high
+                        random.shuffle(matrix_fields)
+                        
+                        logger.info(f"🔧 BALANCED MATRIX STRATEGY: {len(selected_low)} low-usage, {len(selected_medium)} medium-usage, {len(selected_high)} high-usage MATRIX fields")
+                
+                logger.info(f"🔧 ARITHMETIC OPERATORS DETECTED: Found {len(matrix_fields)} MATRIX fields for replacement in {region}")
+                
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to load {region} cache: {e}")
+                return template
+        
+        if not matrix_fields:
+            logger.warning(f"⚠️ No MATRIX fields available for {region}")
+            return template
+        
+        # Get field types to identify all data fields
+        field_types = {}
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, 'r') as f:
+                    fields_data = json.load(f)
+                    for field in fields_data:
+                        field_types[field['id']] = field.get('type', 'REGULAR')
+            except:
+                pass
+        
+        # Find all data fields in the template
+        field_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b'
+        all_words = re.findall(field_pattern, template)
+        
+        # Replace all data fields with MATRIX fields
+        replacement_count = 0
+        for word in all_words:
+            if word in field_types and field_types[word] in ['REGULAR', 'VECTOR'] and replacement_count < len(matrix_fields):
+                replacement_field = matrix_fields[replacement_count]['id']
+                template = template.replace(word, replacement_field)
+                logger.info(f"🔧 ARITHMETIC REPLACEMENT: {word} -> {replacement_field} (MATRIX field)")
+                replacement_count += 1
+        
+        if replacement_count == 0:
+            logger.warning(f"⚠️ NO DATA FIELDS FOUND FOR REPLACEMENT")
+        else:
+            logger.info(f"🔧 REPLACED {replacement_count} fields with MATRIX fields due to arithmetic operators")
+        
+        return template
+
+    def _validate_and_fix_template_fields(self, template: str, region: str, delay: int = None) -> str:
+        """Enhanced field validation with vec_* and non-vec_* operator detection"""
+        logger.info(f"🔧 FIELD VALIDATION: Checking template for {region}")
+        
+        # Check if template contains vec_* operators (replace MATRIX with VECTOR)
+        if self._has_vec_operators(template):
+            logger.info(f"🔧 VEC OPERATORS DETECTED: Replacing MATRIX fields with VECTOR fields")
+            return self._replace_matrix_fields_with_vector_fields(template, region, delay)
+        
+        # Check if template contains non-vec_* operators (including arithmetic)
+        if self._has_non_vec_operators(template):
+            logger.info(f"🔧 NON-VEC OPERATORS DETECTED: Replacing VECTOR fields with MATRIX fields")
+            return self._replace_vector_fields_with_matrix_fields(template, region, delay)
+        
+        # If no special operators, use existing logic
+        logger.info(f"🔧 NO SPECIAL OPERATORS: Using template as-is for {region}")
+        return template
+    
+    def _handle_simulation_error(self, template: str, error_msg: str, settings) -> None:
+        """Handle any simulation error by regenerating template with error feedback"""
+        try:
+            if not settings:
+                logger.warning(f"⚠️ SIMULATION ERROR: No settings available for regeneration")
+                return
+            
+            region = settings.region
+            logger.info(f"🔄 SIMULATION ERROR HANDLING: Regenerating template for {region}")
+            logger.info(f"🔧 ERROR MESSAGE: {error_msg}")
+            
+            # Track retry attempts for this region
+            if not hasattr(self, '_error_retry_count'):
+                self._error_retry_count = {}
+            
+            if region not in self._error_retry_count:
+                self._error_retry_count[region] = 0
+            
+            self._error_retry_count[region] += 1
+            retry_count = self._error_retry_count[region]
+            
+            if retry_count > 5:
+                logger.warning(f"⚠️ MAX RETRIES REACHED: Giving up on {region} after {retry_count} attempts")
+                return
+            
+            logger.info(f"🔄 RETRY ATTEMPT {retry_count}/5 for {region}")
+            
+            # Generate new template with error feedback
+            new_template = self._regenerate_template_with_error_feedback(template, error_msg, region)
+            if new_template:
+                logger.info(f"✅ TEMPLATE REGENERATED: Generated new template for {region}")
+                # Add the new template to the queue for simulation
+                self._add_template_to_queue(new_template, region)
+            else:
+                logger.warning(f"⚠️ TEMPLATE REGENERATION FAILED: Could not generate new template for {region}")
+                
+        except Exception as e:
+            logger.error(f"❌ SIMULATION ERROR HANDLING FAILED: {e}")
+    
+    def _regenerate_template_with_error_feedback(self, failed_template: str, error_msg: str, region: str) -> str:
+        """Regenerate template using Ollama with error feedback"""
+        try:
+            logger.info(f"🔄 REGENERATING TEMPLATE: Using error feedback for {region}")
+            
+            # Get data fields for the region - use optimal delay to match simulation
+            optimal_delay = self.select_optimal_delay(region)
+            data_fields = self.get_data_fields_for_region(region, optimal_delay)
+            if not data_fields:
+                logger.warning(f"⚠️ NO DATA FIELDS: Cannot regenerate template for {region}")
+                return None
+            
+            # Select random fields
+            selected_fields = random.sample(data_fields, min(4, len(data_fields)))
+            
+            # Get operators
+            operators = self.operators.copy()
+            if self.operator_blacklist:
+                operators = [op for op in operators if op['name'] not in self.operator_blacklist]
+            
+            # Select random operators
+            selected_operators = random.sample(operators, min(4, len(operators)))
+            
+            # Create error feedback prompt
+            fields_info = []
+            for field in selected_fields:
+                field_type = field.get('type', 'REGULAR')
+                fields_info.append(f"- {field['id']}: {field.get('description', 'No description')} [{field_type}]")
+            
+            operators_info = []
+            for op in selected_operators:
+                definition = op.get('definition', 'No definition available')
+                operators_info.append(f"- {op['name']}: {op['description']} | Syntax: {definition}")
+            
+            # Select a random persona
+            persona = self._select_persona()
+            persona_prompt = self._get_persona_prompt(persona, 1)
+            
+            prompt = f"""
+🔄 TEMPLATE REGENERATION WITH ERROR FEEDBACK FOR {region.upper()}
+
+{persona_prompt}
+
+PREVIOUS TEMPLATE THAT FAILED:
+{failed_template}
+
+ERROR MESSAGE:
+{error_msg}
+
+You are building a WorldQuant Brain alpha expression. This is NOT SQL - it's a mathematical expression using operators and data fields.
+
+SELECTED FIELDS:
+{chr(10).join(fields_info)}
+
+SELECTED OPERATORS:
+{chr(10).join(operators_info)}
+
+CRITICAL INSTRUCTIONS:
+- This is a MATHEMATICAL EXPRESSION, not SQL code
+- Use ONLY the selected fields and operators above
+- AVOID the error that occurred in the previous template
+- Use proper syntax with balanced parentheses
+- Return ONLY the alpha expression, no explanations, no code blocks, no markdown
+- DO NOT include "plaintext" prefix or any other prefixes
+- No saying 'math' or 'alpha expression' in the results, only the expression
+
+RESPONSE FORMAT (return only the expression, no prefixes):
+"""
+            
+            import ollama
+            response = ollama.chat(
+                model=self.ollama_model,
+                messages=[{'role': 'user', 'content': prompt}],
+                options={'temperature': 0.8, 'top_p': 0.9}
+            )
+            
+            content = response['message']['content'].strip()
+            
+            # Clean up the response
+            if content.startswith('```'):
+                content = content.split('```')[1].strip()
+            if content.startswith('plaintext'):
+                content = content.replace('plaintext', '').strip()
+
+            # Sometimes it starts with 'markdown winsorize(...) or alpla expression normalize(...) or math expression ...'
+            if content.startswith('markdown'):
+                content = content.split('markdown')[1].strip()
+            if content.startswith('alpha expression'):
+                content = content.split('alpha expression')[1].strip()
+            if content.startswith('math expression'):
+                content = content.split('math expression')[1].strip()
+            
+            logger.info(f"🔄 REGENERATED TEMPLATE: {content}")
+            return content
+            
+        except Exception as e:
+            logger.error(f"❌ TEMPLATE REGENERATION FAILED: {e}")
+            return None
+    
+    def _perform_post_simulation_analysis(self, result) -> None:
+        """Perform comprehensive post-simulation analysis including correlations and performance evaluation"""
+        try:
+            logger.info(f"🔍 POST-SIMULATION ANALYSIS: Starting analysis for {result.template[:50]}...")
+            
+            if not result or not result.success:
+                logger.info(f"🔍 POST-SIMULATION ANALYSIS: Skipping analysis - result not successful")
+                return
+            
+            # Get alpha ID from result
+            alpha_id = getattr(result, 'alpha_id', None)
+            logger.info(f"🔍 POST-SIMULATION ANALYSIS: Alpha ID: {alpha_id}")
+            
+            if not alpha_id:
+                logger.warning(f"⚠️ NO ALPHA ID: Cannot perform post-simulation analysis")
+                return
+            
+            # Step 1: Fetch alpha details
+            alpha_details = self._fetch_alpha_details(alpha_id)
+            if not alpha_details:
+                logger.warning(f"⚠️ FAILED TO FETCH ALPHA DETAILS: Cannot analyze alpha {alpha_id}")
+                return
+            
+            # Step 2: Check for FAIL results first
+            checks = alpha_details.get('is', {}).get('checks', [])
+            fail_checks = [check for check in checks if check.get('result') == 'FAIL']
+            
+            # Step 3: Handle FAIL checks immediately
+            if fail_checks:
+                logger.info(f"🚫 FAIL CHECKS DETECTED: Marking as RED immediately ({len(fail_checks)} FAIL checks)")
+                color = "RED"
+                name = self._generate_alpha_name(alpha_details, {'max': 0, 'min': 0, 'records': []}, {'max': 0, 'min': 0, 'records': []}, result)
+                logger.info(f"🎨 IMMEDIATE RED ASSIGNMENT: Color={color}, Name={name}")
+            else:
+                logger.info(f"🔍 NO FAIL CHECKS: Proceeding with correlation analysis")
+                # Check power pool correlation
+                power_pool_corr = self._check_power_pool_correlation(alpha_id)
+                
+                # Check production correlation  
+                prod_corr = self._check_production_correlation(alpha_id)
+                
+                # Step 4: Analyze performance and determine color/name
+                color, name = self._analyze_performance_and_assign_metadata(
+                    alpha_details, power_pool_corr, prod_corr, result
+                )
+            
+            # Step 5: Update alpha with new metadata
+            if color or name:
+                self._update_alpha_metadata(alpha_id, color, name)
+            
+            logger.info(f"✅ POST-SIMULATION ANALYSIS COMPLETE: {alpha_id} - Color: {color}, Name: {name}")
+            
+        except Exception as e:
+            logger.error(f"❌ POST-SIMULATION ANALYSIS FAILED: {e}")
+            import traceback
+            logger.error(f"❌ POST-SIMULATION ANALYSIS TRACEBACK: {traceback.format_exc()}")
+            # Don't let the exception propagate - just log it and continue
+    
+    def _fetch_alpha_details(self, alpha_id: str) -> dict:
+        """Fetch alpha details from WorldQuant Brain API"""
+        try:
+            url = f"https://api.worldquantbrain.com/alphas/{alpha_id}"
+            response = self.make_api_request('GET', url)
+            
+            if response.status_code == 200:
+                alpha_data = response.json()
+                logger.info(f"📊 ALPHA DETAILS FETCHED: {alpha_id}")
+                return alpha_data
+            else:
+                logger.error(f"Failed to fetch alpha details: {response.status_code}")
+                return None
+            
+        except Exception as e:
+            logger.error(f"❌ FAILED TO FETCH ALPHA DETAILS: {e}")
+            return None
+    
+    def _check_power_pool_correlation(self, alpha_id: str) -> dict:
+        """Check power pool correlation for the alpha with polling for processing"""
+        try:
+            url = f"https://api.worldquantbrain.com/alphas/{alpha_id}/correlations/power-pool"
+            
+            # Poll the API until we get actual data (not empty response while processing)
+            max_polls = 10  # Maximum number of polling attempts
+            poll_interval = 5  # Wait 5 seconds between polls
+            
+            for attempt in range(max_polls):
+                response = self.make_api_request('GET', url)
+                
+                if response.status_code == 200:
+                    corr_data = response.json()
+                    
+                    # Check if we have actual data (not empty response while processing)
+                    has_data = (
+                        corr_data.get('max') is not None or 
+                        corr_data.get('min') is not None or 
+                        corr_data.get('records') or
+                        len(corr_data) > 0
+                    )
+                    
+                    if has_data:
+                        # Extract max and min correlation values
+                        max_corr = corr_data.get('max', 0)
+                        min_corr = corr_data.get('min', 0)
+                        
+                        # If max/min are 0, try to calculate from records
+                        if max_corr == 0 and min_corr == 0 and corr_data.get('records'):
+                            records = corr_data.get('records', [])
+                            if records:
+                                # Extract correlation values from records
+                                correlations = []
+                                for record in records:
+                                    if len(record) > 5:  # Ensure record has correlation field
+                                        corr_value = record[5]  # correlation is at index 5
+                                        if isinstance(corr_value, (int, float)):
+                                            correlations.append(corr_value)
+                                
+                                if correlations:
+                                    max_corr = max(correlations)
+                                    min_corr = min(correlations)
+                        
+                        logger.info(f"🔗 POWER POOL CORRELATION: Max={max_corr:.3f}, Min={min_corr:.3f}")
+                        return {
+                            'max': max_corr,
+                            'min': min_corr,
+                            'records': corr_data.get('records', [])
+                        }
+                    else:
+                        # Empty response while processing, wait and try again
+                        logger.info(f"⏳ Power pool correlation still processing (attempt {attempt + 1}/{max_polls}), waiting {poll_interval}s...")
+                        if attempt < max_polls - 1:  # Don't sleep on last attempt
+                            import time
+                            time.sleep(poll_interval)
+                        continue
+                else:
+                    logger.error(f"Failed to fetch power pool correlation: {response.status_code}")
+                    return {'max': 0, 'min': 0, 'records': []}
+            
+            # If we've exhausted all polling attempts
+            logger.warning(f"⚠️ Power pool correlation still processing after {max_polls} attempts, using default values")
+            return {'max': 0, 'min': 0, 'records': []}
+            
+        except Exception as e:
+            logger.error(f"❌ FAILED TO CHECK POWER POOL CORRELATION: {e}")
+            return {'max': 0, 'min': 0, 'records': []}
+    
+    def _check_production_correlation(self, alpha_id: str) -> dict:
+        """Check production correlation for the alpha with polling for processing"""
+        try:
+            url = f"https://api.worldquantbrain.com/alphas/{alpha_id}/correlations/prod"
+            
+            # Poll the API until we get actual data (not empty response while processing)
+            max_polls = 10  # Maximum number of polling attempts
+            poll_interval = 5  # Wait 5 seconds between polls
+            
+            for attempt in range(max_polls):
+                response = self.make_api_request('GET', url)
+                
+                if response.status_code == 200:
+                    corr_data = response.json()
+                    
+                    # Check if we have actual data (not empty response while processing)
+                    has_data = (
+                        corr_data.get('max') is not None or 
+                        corr_data.get('min') is not None or 
+                        corr_data.get('records') or
+                        len(corr_data) > 0
+                    )
+                    
+                    if has_data:
+                        # Extract max and min correlation values
+                        max_corr = corr_data.get('max', 0)
+                        min_corr = corr_data.get('min', 0)
+                        
+                        # If max/min are 0, try to calculate from records
+                        if max_corr == 0 and min_corr == 0 and corr_data.get('records'):
+                            records = corr_data.get('records', [])
+                            if records:
+                                # For production correlation, extract from histogram data
+                                correlations = []
+                                for record in records:
+                                    if len(record) >= 2:  # [min_range, max_range, count]
+                                        # Use midpoint of range as correlation value
+                                        min_range = record[0]
+                                        max_range = record[1]
+                                        count = record[2] if len(record) > 2 else 0
+                                        
+                                        if count > 0:  # Only include ranges with actual correlations
+                                            midpoint = (min_range + max_range) / 2
+                                            correlations.append(midpoint)
+                                
+                                if correlations:
+                                    max_corr = max(correlations)
+                                    min_corr = min(correlations)
+                        
+                        logger.info(f"🔗 PRODUCTION CORRELATION: Max={max_corr:.3f}, Min={min_corr:.3f}")
+                        return {
+                            'max': max_corr,
+                            'min': min_corr,
+                            'records': corr_data.get('records', [])
+                        }
+                    else:
+                        # Empty response while processing, wait and try again
+                        logger.info(f"⏳ Production correlation still processing (attempt {attempt + 1}/{max_polls}), waiting {poll_interval}s...")
+                        if attempt < max_polls - 1:  # Don't sleep on last attempt
+                            import time
+                            time.sleep(poll_interval)
+                        continue
+                else:
+                    logger.error(f"Failed to fetch production correlation: {response.status_code}")
+                    return {'max': 0, 'min': 0, 'records': []}
+            
+            # If we've exhausted all polling attempts
+            logger.warning(f"⚠️ Production correlation still processing after {max_polls} attempts, using default values")
+            return {'max': 0, 'min': 0, 'records': []}
+            
+        except Exception as e:
+            logger.error(f"❌ FAILED TO CHECK PRODUCTION CORRELATION: {e}")
+            return {'max': 0, 'min': 0, 'records': []}
+    
+    def _analyze_performance_and_assign_metadata(self, alpha_details: dict, power_pool_corr: dict, prod_corr: dict, result) -> tuple:
+        """Analyze performance metrics and assign color and name"""
+        try:
+            # Extract performance data
+            is_data = alpha_details.get('is', {})
+            checks = alpha_details.get('is', {}).get('checks', [])
+            
+            # Get key metrics
+            sharpe = is_data.get('sharpe', 0)
+            fitness = is_data.get('fitness', 0)
+            returns = is_data.get('returns', 0)
+            turnover = is_data.get('turnover', 0)
+            
+            # Get correlation metrics
+            power_pool_max = power_pool_corr.get('max', 0)
+            prod_max = prod_corr.get('max', 0)
+            
+            # Analyze checks for FAIL/WARNING/PASS
+            fail_checks = [check for check in checks if check.get('result') == 'FAIL']
+            warning_checks = [check for check in checks if check.get('result') == 'WARNING']
+            pass_checks = [check for check in checks if check.get('result') == 'PASS']
+            
+            # Determine color based on rules including PnL flatline detection
+            color = self._determine_alpha_color(fail_checks, warning_checks, power_pool_max, prod_max, 
+                                              alpha_details)
+            
+            # Generate name based on correlations and data fields
+            name = self._generate_alpha_name(alpha_details, power_pool_corr, prod_corr, result)
+            
+            logger.info(f"🎨 ALPHA METADATA: Color={color}, Name={name}")
+            logger.info(f"📊 PERFORMANCE: Sharpe={sharpe:.3f}, Fitness={fitness:.3f}, Returns={returns:.3f}")
+            logger.info(f"🔗 CORRELATIONS: PowerPool={power_pool_max:.3f}, Prod={prod_max:.3f}")
+            logger.info(f"✅ CHECKS: {len(pass_checks)} PASS, {len(warning_checks)} WARNING, {len(fail_checks)} FAIL")
+            
+            return color, name
+            
+        except Exception as e:
+            logger.error(f"❌ FAILED TO ANALYZE PERFORMANCE: {e}")
+            return None, None
+    
+    def _determine_alpha_color(self, fail_checks: list, warning_checks: list, power_pool_max: float, prod_max: float, 
+                              alpha_details: dict) -> str:
+        """Determine alpha color based on performance and correlation rules with PnL flatline detection"""
+        # RED: Any FAIL (correlation checks skipped if FAIL exists)
+        if fail_checks:
+            return "RED"
+        
+        # RED: PnL is flatline - critical performance issue
+        if self._is_pnl_flatline(alpha_details):
+            logger.warning(f"🔴 FLATLINE PnL DETECTED: Actual PnL data shows flatline pattern")
+            return "RED"
+        
+        # RED: Power pool correlation > 0.5 (only if correlations were checked)
+        if power_pool_max > 0.5:
+            return "RED"
+        
+        # YELLOW: Any WARNING or production correlation > 0.7
+        if warning_checks or prod_max > 0.7:
+            return "YELLOW"
+        
+        # GREEN: All PASS and production correlation < 0.7
+        return "GREEN"
+    
+    def _is_pnl_flatline(self, alpha_details: dict) -> bool:
+        """Detect if PnL is actually flatline based on PnL data analysis"""
+        try:
+            # Get PnL data from alpha details
+            pnl_data = alpha_details.get('pnl', {})
+            if not pnl_data:
+                logger.warning("🔍 NO PnL DATA AVAILABLE - cannot check for flatline")
+                return False
+            
+            # Extract PnL values (assuming it's a time series of PnL values)
+            pnl_values = pnl_data.get('values', [])
+            if not pnl_values or len(pnl_values) < 10:  # Need sufficient data points
+                logger.warning("🔍 INSUFFICIENT PnL DATA - cannot check for flatline")
+                return False
+            
+            # Convert to float if needed
+            try:
+                pnl_float_values = [float(x) for x in pnl_values if x is not None]
+            except (ValueError, TypeError):
+                logger.warning("🔍 INVALID PnL DATA FORMAT - cannot check for flatline")
+                return False
+            
+            if len(pnl_float_values) < 10:
+                logger.warning("🔍 INSUFFICIENT VALID PnL DATA - cannot check for flatline")
+                return False
+            
+            # Analyze PnL for flatline patterns
+            return self._analyze_pnl_flatline_pattern(pnl_float_values)
+            
+        except Exception as e:
+            logger.error(f"❌ FAILED TO CHECK PnL FLATLINE: {e}")
+            return False
+    
+    def _analyze_pnl_flatline_pattern(self, pnl_values: list) -> bool:
+        """Analyze PnL values for flatline patterns"""
+        try:
+            if len(pnl_values) < 10:
+                return False
+            
+            # Calculate PnL statistics
+            pnl_min = min(pnl_values)
+            pnl_max = max(pnl_values)
+            pnl_range = pnl_max - pnl_min
+            pnl_mean = sum(pnl_values) / len(pnl_values)
+            pnl_std = (sum((x - pnl_mean) ** 2 for x in pnl_values) / len(pnl_values)) ** 0.5
+            
+            # FLATLINE DETECTION CRITERIA:
+            
+            # 1. Very small range (PnL barely changes)
+            if pnl_range < 0.001:  # Less than 0.1% range
+                logger.warning(f"🔴 PnL FLATLINE: Range={pnl_range:.6f} < 0.001")
+                return True
+            
+            # 2. Very low standard deviation (no volatility)
+            if pnl_std < 0.0001:  # Less than 0.01% std dev
+                logger.warning(f"🔴 PnL FLATLINE: StdDev={pnl_std:.6f} < 0.0001")
+                return True
+            
+            # 3. All values are essentially the same (within 0.01%)
+            pnl_variance = max(pnl_values) - min(pnl_values)
+            if pnl_variance < 0.0001:  # Less than 0.01% variance
+                logger.warning(f"🔴 PnL FLATLINE: Variance={pnl_variance:.6f} < 0.0001")
+                return True
+            
+            # 4. Check for constant PnL (all values within 0.001% of mean)
+            tolerance = abs(pnl_mean) * 0.00001  # 0.001% of mean
+            if tolerance < 0.000001:  # Minimum tolerance
+                tolerance = 0.000001
+            
+            constant_values = sum(1 for x in pnl_values if abs(x - pnl_mean) <= tolerance)
+            if constant_values >= len(pnl_values) * 0.95:  # 95% of values are constant
+                logger.warning(f"🔴 PnL FLATLINE: {constant_values}/{len(pnl_values)} values constant within {tolerance:.6f}")
+                return True
+            
+            # 5. Check for zero or near-zero PnL throughout
+            near_zero_count = sum(1 for x in pnl_values if abs(x) < 0.0001)
+            if near_zero_count >= len(pnl_values) * 0.9:  # 90% of values near zero
+                logger.warning(f"🔴 PnL FLATLINE: {near_zero_count}/{len(pnl_values)} values near zero")
+                return True
+            
+            logger.info(f"✅ PnL NOT FLATLINE: Range={pnl_range:.6f}, StdDev={pnl_std:.6f}, Variance={pnl_variance:.6f}")
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ FAILED TO ANALYZE PnL PATTERN: {e}")
+            return False
+    
+    def _generate_alpha_name(self, alpha_details: dict, power_pool_corr: dict, prod_corr: dict, result) -> str:
+        """Generate alpha name based on correlations and data fields with enhanced correlation metrics"""
+        try:
+            # Extract data fields from the alpha code
+            code = alpha_details.get('regular', {}).get('code', '')
+            
+            # Find data fields in the code
+            import re
+            field_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b'
+            fields = re.findall(field_pattern, code)
+            
+            # Filter out operators and keep only data fields
+            operators = {'subtract', 'add', 'multiply', 'divide', 'normalize', 'rank', 'ts_rank', 'ts_delta', 
+                        'vec_avg', 'vec_sum', 'vec_max', 'vec_min', 'group_scale', 'group_zscore', 'ts_corr',
+                        'ts_std', 'ts_mean', 'ts_zscore', 'ts_scale', 'ts_sum', 'ts_product', 'ts_min', 'ts_max',
+                        'group_rank', 'group_neutralize', 'group_mean', 'group_max', 'group_min', 'group_backfill',
+                        'scale', 'zscore', 'abs', 'sign', 'min', 'max', 'log', 'exp', 'sqrt', 'power', 'signed_power',
+                        'reverse', 'to_nan', 'inverse', 'divide', 'multiply', 'add', 'subtract', 'ts_delta', 'ts_rank',
+                        'vec_rank', 'vec_std', 'vec_scale', 'vec_min', 'vec_max', 'vec_sum', 'vec_avg'}
+            data_fields = [f for f in fields if f not in operators and len(f) > 3]
+            
+            # Get correlation metrics with debugging
+            power_pool_max = power_pool_corr.get('max', 0)
+            power_pool_min = power_pool_corr.get('min', 0)
+            prod_max = prod_corr.get('max', 0)
+            prod_min = prod_corr.get('min', 0)
+            
+            # Debug correlation values
+            logger.info(f"🔍 CORRELATION DEBUG: PowerPool max={power_pool_max}, min={power_pool_min}")
+            logger.info(f"🔍 CORRELATION DEBUG: Production max={prod_max}, min={prod_min}")
+            
+            # If correlations are still 0, try to extract from records
+            if power_pool_max == 0 and power_pool_corr.get('records'):
+                records = power_pool_corr.get('records', [])
+                if records:
+                    correlations = [record[5] for record in records if len(record) > 5 and isinstance(record[5], (int, float))]
+                    if correlations:
+                        power_pool_max = max(correlations)
+                        power_pool_min = min(correlations)
+                        logger.info(f"🔍 EXTRACTED FROM RECORDS: PowerPool max={power_pool_max}, min={power_pool_min}")
+            
+            if prod_max == 0 and prod_corr.get('records'):
+                records = prod_corr.get('records', [])
+                if records:
+                    # For production correlation histogram data
+                    correlations = []
+                    for record in records:
+                        if len(record) >= 2 and record[2] > 0:  # [min, max, count]
+                            midpoint = (record[0] + record[1]) / 2
+                            correlations.append(midpoint)
+                    if correlations:
+                        prod_max = max(correlations)
+                        prod_min = min(correlations)
+                        logger.info(f"🔍 EXTRACTED FROM RECORDS: Production max={prod_max}, min={prod_min}")
+            
+            # Generate name components
+            name_parts = []
+            
+            # MANDATORY: Always include both production and power pool correlation metrics with actual values
+            # Production correlation (PC) - always include actual value
+            name_parts.append(f"PC{prod_max:.2f}")
+            
+            # Power pool correlation (PPC) - always include actual value
+            name_parts.append(f"PPC{power_pool_max:.2f}")
+            
+            # Include minimum correlation values for complete picture
+            if prod_min != prod_max:
+                name_parts.append(f"PC_MIN{prod_min:.2f}")
+            if power_pool_min != power_pool_max:
+                name_parts.append(f"PPC_MIN{power_pool_min:.2f}")
+            
+            # Add PnL flatline indicator if detected
+            if self._is_pnl_flatline(alpha_details):
+                name_parts.append("FLATLINE")
+            
+            # Add data field info (first 2 fields) for context
+            if data_fields:
+                field_names = data_fields[:2]
+                for field in field_names:
+                    # Extract meaningful part of field name
+                    if '_' in field:
+                        parts = field.split('_')
+                        if len(parts) > 1:
+                            name_parts.append(parts[1][:4].upper())
+                    else:
+                        name_parts.append(field[:4].upper())
+            
+            # Add template identifier
+            if hasattr(result, 'template') and result.template:
+                template_id = result.template[:10].replace(' ', '_').replace('-', '_')
+                name_parts.append(f"T{template_id}")
+            
+            # Combine name parts with proper formatting
+            if name_parts:
+                name = "_".join(name_parts)
+            else:
+                name = f"Alpha_{result.template[:20].replace(' ', '_')}"
+            
+            # Ensure name includes both correlation metrics with actual values
+            if "PC" not in name:
+                name = f"PC{prod_max:.2f}_{name}"
+            if "PPC" not in name:
+                name = f"{name}_PPC{power_pool_max:.2f}"
+            
+            return name[:50]  # Limit name length
+            
+        except Exception as e:
+            logger.error(f"❌ FAILED TO GENERATE ALPHA NAME: {e}")
+            return f"Alpha_{result.template[:20].replace(' ', '_')}"
+    
+    def _update_alpha_metadata(self, alpha_id: str, color: str, name: str) -> None:
+        """Update alpha with new color and name"""
+        try:
+            url = f"https://api.worldquantbrain.com/alphas/{alpha_id}"
+            
+            # Prepare update data
+            update_data = {}
+            if color:
+                update_data['color'] = color
+            if name:
+                update_data['name'] = name
+            
+            if update_data:
+                response = self.make_api_request('PATCH', url, json=update_data)
+                if response.status_code == 200:
+                    logger.info(f"✅ ALPHA UPDATED: {alpha_id} - Color: {color}, Name: {name}")
+                else:
+                    logger.error(f"Failed to update alpha metadata: {response.status_code}")
+            else:
+                logger.info(f"ℹ️ NO UPDATES NEEDED: {alpha_id}")
+                
+        except Exception as e:
+            logger.error(f"❌ FAILED TO UPDATE ALPHA METADATA: {e}")
+    
+    def _add_template_to_queue(self, template: str, region: str) -> None:
+        """Add a regenerated template to the simulation queue"""
+        try:
+            # Create a new simulation task
+            template_dict = {
+                'template': template,
+                'neutralization': 'INDUSTRY'
+            }
+            future = self.executor.submit(
+                self._simulate_template_concurrent,
+                template_dict,
+                region,
+                delay=optimal_delay  # Use optimal delay for regenerated templates
+            )
+            
+            # Store the future
+            future_id = f"regenerated_{int(time.time() * 1000)}"
+            self.active_futures[future_id] = future
+            self.future_start_times[future_id] = time.time()
+            
+            logger.info(f"✅ TEMPLATE ADDED TO QUEUE: {template[:50]}... for {region}")
+            
+        except Exception as e:
+            logger.error(f"❌ FAILED TO ADD TEMPLATE TO QUEUE: {e}")
+    
+    def _load_personas(self) -> List[Dict]:
+        """Load prompt personas from JSON file"""
+        try:
+            with open('prompt_personas.json', 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data.get('personas', [])
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to load personas: {e}")
+            # Fallback to default personas
+            return [
+                {
+                    "name": "Bruce Lee",
+                    "style": "Philosophical Warrior",
+                    "prompt": "🧠 BRUCE LEE PHILOSOPHY - \"BE LIKE WATER\":\n- Be fluid and adaptive\n- Create new patterns\n- Explore infinite possibilities"
+                },
+                {
+                    "name": "Pro Quant Researcher", 
+                    "style": "Academic Rigor",
+                    "prompt": "🎓 PROFESSIONAL QUANTITATIVE RESEARCHER:\n- Apply rigorous statistical principles\n- Focus on economically sound relationships\n- Use advanced mathematical techniques"
+                }
+            ]
+    
+    def _load_historical_alphas(self) -> List[Dict]:
+        """Load historical alpha expressions from local JSON file"""
+        try:
+            # Load from local JSON file instead of API call
+            json_file_path = "submitted_alpha.json"
+            logger.info(f"🔍 TRACE: Loading historical alphas from local file: {json_file_path}")
+            
+            with open(json_file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            alphas = data.get('results', [])
+            logger.info(f"🔍 TRACE: Loaded {len(alphas)} alphas from local file")
+            
+            # Extract alpha expressions and metadata
+            historical_alphas = []
+            for i, alpha in enumerate(alphas):
+                logger.info(f"🔍 TRACE: Processing alpha {i+1}/{len(alphas)} - ID: {alpha.get('id', 'N/A')}")
+                if 'regular' in alpha and 'code' in alpha['regular']:
+                    expression = alpha['regular']['code']
+                    is_data = alpha.get('is', {})
+                    
+                    historical_alphas.append({
+                        'expression': expression,
+                        'sharpe': is_data.get('sharpe', 0),
+                        'fitness': is_data.get('fitness', 0),
+                        'region': alpha.get('settings', {}).get('region', 'UNKNOWN'),
+                        'universe': alpha.get('settings', {}).get('universe', 'UNKNOWN'),
+                        'operator_count': alpha.get('regular', {}).get('operatorCount', 0),
+                        'date_created': alpha.get('dateCreated', ''),
+                        'date_submitted': alpha.get('dateSubmitted', ''),
+                        'status': alpha.get('status', 'UNKNOWN'),
+                        'alpha_id': alpha.get('id', '')
+                    })
+                    logger.info(f"🔍 TRACE: Added alpha - Expression: {expression[:50]}..., Sharpe: {is_data.get('sharpe', 0)}")
+                else:
+                    logger.info(f"🔍 TRACE: Skipped alpha {i+1} - missing 'regular' or 'code' field")
+            
+            logger.info(f"📚 LOADED HISTORICAL ALPHAS: {len(historical_alphas)} expressions from local file")
+            return historical_alphas
+                
+        except FileNotFoundError:
+            logger.warning(f"⚠️ Historical alphas file not found: {json_file_path}")
+            return []
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to load historical alphas from file: {e}")
+            logger.info(f"🔍 TRACE: Exception details: {type(e).__name__}: {str(e)}")
+            return []
+    
+    def _make_api_request_with_retry(self, method, url, params=None, headers=None, max_retries=3):
+        """Make API request with exponential backoff retry for rate limiting"""
+        import time
+        import random
+        
+        for attempt in range(max_retries + 1):
+            try:
+                response = self.make_api_request(method, url, params=params, headers=headers)
+                
+                if response and response.status_code == 200:
+                    return response
+                elif response and response.status_code == 429:  # Rate limited
+                    if attempt < max_retries:
+                        # Exponential backoff with jitter
+                        wait_time = (2 ** attempt) + random.uniform(0, 1)
+                        logger.info(f"🔍 TRACE: Rate limited (429), retrying in {wait_time:.2f} seconds (attempt {attempt + 1}/{max_retries + 1})")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        logger.warning(f"⚠️ Rate limited after {max_retries + 1} attempts, giving up")
+                        return response
+                else:
+                    logger.warning(f"⚠️ API request failed with status {response.status_code if response else 'None'}")
+                    return response
+                    
+            except Exception as e:
+                if attempt < max_retries:
+                    wait_time = (2 ** attempt) + random.uniform(0, 1)
+                    logger.info(f"🔍 TRACE: Request failed, retrying in {wait_time:.2f} seconds (attempt {attempt + 1}/{max_retries + 1}): {e}")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(f"❌ Request failed after {max_retries + 1} attempts: {e}")
+                    return None
+        
+        return None
+    
+    def _select_historical_alphas(self, count: int = 3) -> List[Dict]:
+        """Select random historical alphas for inspiration"""
+        logger.info(f"🔍 TRACE: _select_historical_alphas called with count={count}")
+        logger.info(f"🔍 TRACE: self.historical_alphas length: {len(self.historical_alphas) if self.historical_alphas else 0}")
+        
+        if not self.historical_alphas:
+            logger.info(f"🔍 TRACE: No historical alphas available, returning empty list")
+            return []
+        
+        # Use random offset to get different alphas each time
+        import random
+        max_offset = max(0, len(self.historical_alphas) - count)
+        start_offset = random.randint(0, max_offset)
+        
+        selected_alphas = self.historical_alphas[start_offset:start_offset + count]
+        
+        logger.info(f"🔍 TRACE: Selected {len(selected_alphas)} alphas from {len(self.historical_alphas)} available")
+        logger.info(f"📚 SELECTED HISTORICAL ALPHAS: {len(selected_alphas)} expressions for inspiration")
+        return selected_alphas
+    
+    def _select_persona(self) -> Dict:
+        """Select a random persona, avoiding recently used ones"""
+        if not self.personas:
+            return {"name": "Default", "style": "Standard", "prompt": ""}
+        
+        # Get available personas (excluding recent ones)
+        available_personas = [p for p in self.personas if p['name'] not in self.recent_personas]
+        
+        # If all personas have been used recently, reset the recent list
+        if not available_personas:
+            self.recent_personas = []
+            available_personas = self.personas
+        
+        # Select random persona
+        selected_persona = random.choice(available_personas)
+        
+        # Track recent personas (keep last 3)
+        self.recent_personas.append(selected_persona['name'])
+        if len(self.recent_personas) > 3:
+            self.recent_personas.pop(0)
+        
+        logger.info(f"🎭 SELECTED PERSONA: {selected_persona['name']} ({selected_persona['style']})")
+        return selected_persona
+    
+    def _get_persona_prompt(self, persona: Dict, num_templates: int = 10) -> str:
+        """Generate persona-specific prompt"""
+        base_prompt = persona.get('prompt', '')
+        
+        if not base_prompt:
+            return ""
+        
+        # Add final requirements
+        final_requirements = f"""
+FINAL REQUIREMENTS:
+1. Use ONLY the provided operators and fields exactly as listed
+2. Focus on economic intuition and market significance
+3. Combine multiple operators for sophisticated strategies
+4. Use appropriate time periods and parameters
+5. Ensure perfect syntax and balanced parentheses
+6. Generate {num_templates} diverse, profitable alpha expressions
+7. Each template must be immediately usable in WorldQuant Brain
+8. {persona['name'].upper()} APPROACH - {persona['style'].upper()}
+"""
+        
+        return base_prompt + final_requirements
     
     def _find_replacement_field(self, invalid_field: str, valid_fields: set, data_fields: list) -> Optional[str]:
         """Find a suitable replacement field for an invalid field"""
@@ -4414,18 +4863,17 @@ RESPONSE FORMAT: Answer with only "YES" or "NO"
         """Extract field names from Ollama-generated template, excluding operators"""
         # Known operators that should NOT be treated as fields
         known_operators = {
-            'ts_rank', 'ts_max', 'ts_min', 'ts_sum', 'ts_mean', 'ts_std_dev', 'ts_skewness', 'ts_kurtosis',
-            'ts_corr', 'ts_regression', 'ts_delta', 'ts_ratio', 'ts_product', 'ts_scale', 'ts_zscore',
-            'ts_lag', 'ts_lead', 'ts_arg_max', 'ts_arg_min', 'rank', 'add', 'subtract', 'multiply', 'divide',
-            'power', 'abs', 'sign', 'sqrt', 'log', 'exp', 'max', 'min', 'sum', 'mean', 'std', 'std_dev',
-            'corr', 'regression', 'delta', 'ratio', 'product', 'scale', 'zscore', 'lag', 'lead',
-            'group_neutralize', 'group_neutralize', 'group_zscore', 'group_rank', 'group_max', 'group_min',
-            'group_sum', 'group_mean', 'group_std', 'group_scale', 'group_backfill', 'group_forward_fill',
-            'vec_avg', 'vec_sum', 'vec_max', 'vec_min', 'vec_std', 'vec_rank', 'vec_scale',
-            'if_else', 'greater', 'less', 'greater_equal', 'less_equal', 'equal', 'not_equal',
-            'and', 'or', 'not', 'is_nan', 'is_finite', 'is_infinite', 'fill_na', 'forward_fill',
-            'backward_fill', 'clip', 'clip_lower', 'clip_upper', 'signed_power', 'inverse', 'inverse_sqrt',
-            'bucket', 'step', 'hump', 'days_from_last_change', 'ts_step', 'ts_bucket', 'ts_hump'
+            'abs', 'add', 'and', 'bucket', 'days_from_last_change', 'densify', 'divide', 'equal', 'greater',
+            'greater_equal', 'group_backfill', 'group_cartesian_product', 'group_max', 'group_mean', 'group_min',
+            'group_neutralize', 'group_rank', 'group_scale', 'group_zscore', 'hump', 'if_else', 'inverse',
+            'is_nan', 'jump_decay', 'kth_element', 'last_diff_value', 'less', 'less_equal', 'log', 'max',
+            'min', 'multiply', 'normalize', 'not', 'not_equal', 'or', 'power', 'quantile', 'rank', 'reverse',
+            'scale', 'scale_down', 'sign', 'signed_power', 'sqrt', 'subtract', 'to_nan', 'trade_when',
+            'ts_arg_max', 'ts_arg_min', 'ts_av_diff', 'ts_backfill', 'ts_corr', 'ts_count_nans', 'ts_covariance',
+            'ts_decay_linear', 'ts_delay', 'ts_delta', 'ts_max', 'ts_mean', 'ts_min', 'ts_product', 'ts_quantile',
+            'ts_rank', 'ts_regression', 'ts_scale', 'ts_std_dev', 'ts_step', 'ts_sum', 'ts_target_tvr_decay',
+            'ts_target_tvr_delta_limit', 'ts_zscore', 'vec_avg', 'vec_max', 'vec_min', 'vec_sum', 'vector_neut',
+            'winsorize', 'zscore'
         }
         
         # Common financial field patterns
@@ -4469,9 +4917,9 @@ RESPONSE FORMAT: Answer with only "YES" or "NO"
             'max', 'min', 'sum', 'mean', 'std', 'std_dev', 'corr', 'regression', 'delta', 'ratio', 'product', 'scale', 'zscore', 'lag', 'lead',
             # Group operators
             'group_neutralize', 'group_neutralize', 'group_zscore', 'group_rank', 'group_max', 'group_min',
-            'group_sum', 'group_mean', 'group_std', 'group_scale', 'group_backfill', 'group_forward_fill',
+            'group_zscore', 'group_scale', 'group_max', 'group_min', 'group_rank', 'group_neutralize', 'group_mean', 'group_backfill', 'group_cartesian_product',
             # Vector operators
-            'vec_avg', 'vec_sum', 'vec_max', 'vec_min', 'vec_std', 'vec_rank', 'vec_scale',
+            'vec_avg', 'vec_sum', 'vec_max', 'vec_min',
             # Conditional operators
             'if_else', 'greater', 'less', 'greater_equal', 'less_equal', 'equal', 'not_equal',
             'and', 'or', 'not', 'is_nan', 'is_finite', 'is_infinite', 'fill_na', 'forward_fill',
@@ -4519,9 +4967,9 @@ RESPONSE FORMAT: Answer with only "YES" or "NO"
             'max', 'min', 'sum', 'mean', 'std', 'std_dev', 'corr', 'regression', 'delta', 'ratio', 'product', 'scale', 'zscore', 'lag', 'lead',
             # Group operators
             'group_neutralize', 'group_neutralize', 'group_zscore', 'group_rank', 'group_max', 'group_min',
-            'group_sum', 'group_mean', 'group_std', 'group_scale', 'group_backfill', 'group_forward_fill',
+            'group_zscore', 'group_scale', 'group_max', 'group_min', 'group_rank', 'group_neutralize', 'group_mean', 'group_backfill', 'group_cartesian_product',
             # Vector operators
-            'vec_avg', 'vec_sum', 'vec_max', 'vec_min', 'vec_std', 'vec_rank', 'vec_scale',
+            'vec_avg', 'vec_sum', 'vec_max', 'vec_min',
             # Conditional operators
             'if_else', 'greater', 'less', 'greater_equal', 'less_equal', 'equal', 'not_equal',
             'and', 'or', 'not', 'is_nan', 'is_finite', 'is_infinite', 'fill_na', 'forward_fill',
@@ -4578,9 +5026,9 @@ RESPONSE FORMAT: Answer with only "YES" or "NO"
             'max', 'min', 'sum', 'mean', 'std', 'std_dev', 'corr', 'regression', 'delta', 'ratio', 'product', 'scale', 'zscore', 'lag', 'lead',
             # Group operators
             'group_neutralize', 'group_neutralize', 'group_zscore', 'group_rank', 'group_max', 'group_min',
-            'group_sum', 'group_mean', 'group_std', 'group_scale', 'group_backfill', 'group_forward_fill',
+            'group_zscore', 'group_scale', 'group_max', 'group_min', 'group_rank', 'group_neutralize', 'group_mean', 'group_backfill', 'group_cartesian_product',
             # Vector operators
-            'vec_avg', 'vec_sum', 'vec_max', 'vec_min', 'vec_std', 'vec_rank', 'vec_scale',
+            'vec_avg', 'vec_sum', 'vec_max', 'vec_min',
             # Conditional operators
             'if_else', 'greater', 'less', 'greater_equal', 'less_equal', 'equal', 'not_equal',
             'and', 'or', 'not', 'is_nan', 'is_finite', 'is_infinite', 'fill_na', 'forward_fill',
@@ -4690,9 +5138,9 @@ RESPONSE FORMAT: Answer with only "YES" or "NO"
             'max', 'min', 'sum', 'mean', 'std', 'std_dev', 'corr', 'regression', 'delta', 'ratio', 'product', 'scale', 'zscore', 'lag', 'lead',
             # Group operators
             'group_neutralize', 'group_neutralize', 'group_zscore', 'group_rank', 'group_max', 'group_min',
-            'group_sum', 'group_mean', 'group_std', 'group_scale', 'group_backfill', 'group_forward_fill',
+            'group_zscore', 'group_scale', 'group_max', 'group_min', 'group_rank', 'group_neutralize', 'group_mean', 'group_backfill', 'group_cartesian_product',
             # Vector operators
-            'vec_avg', 'vec_sum', 'vec_max', 'vec_min', 'vec_std', 'vec_rank', 'vec_scale',
+            'vec_avg', 'vec_sum', 'vec_max', 'vec_min',
             # Conditional operators
             'if_else', 'greater', 'less', 'greater_equal', 'less_equal', 'equal', 'not_equal',
             'and', 'or', 'not', 'is_nan', 'is_finite', 'is_infinite', 'fill_na', 'forward_fill',
@@ -4839,1033 +5287,7 @@ These are actual submitted alphas with real performance metrics. Use them as ins
 - ts_rank(ts_delta(close, 5), 20) - Price momentum with ranking
 - group_neutralize(ts_zscore(volume, 60), industry) - Industry-neutral volume z-score
 - ts_corr(ts_rank(close, 20), ts_rank(volume, 20), 60) - Cross-sectional momentum correlation"""
-    
-    def _generate_with_data_field_substitution(self, region: str, num_templates: int) -> List[Dict]:
-        """Generate templates with data field substitution (original logic) - NOT USED BY DEFAULT"""
-        logger.info(f"🔄 DATA-FIELD SUBSTITUTION: Generating {num_templates} templates with data field substitution for {region}")
-        
-        # Get data fields for this region with optimal delay based on pyramid multipliers
-        config = self.region_configs[region]
-        optimal_delay = self.select_optimal_delay(region)
-        data_fields = self.get_data_fields_for_region(region, optimal_delay)
-        if not data_fields:
-            logger.warning(f"No data fields found for region {region}")
-            return []
-        
-        # Separate fields by type for better operator selection
-        vector_fields = [f for f in data_fields if f.get('type') == 'VECTOR']
-        matrix_fields = [f for f in data_fields if f.get('type') == 'MATRIX']
-        regular_fields = [f for f in data_fields if f.get('type') == 'REGULAR']
-        
-        logger.info(f"📊 Field type distribution: {len(vector_fields)} VECTOR, {len(matrix_fields)} MATRIX, {len(regular_fields)} REGULAR")
-        
-        # Create field type summary for Ollama
-        field_type_summary = f"""
-📊 FIELD TYPE DISTRIBUTION FOR {region}:
-- VECTOR fields: {len(vector_fields)} (Cross-sectional data - use Cross Sectional operators)
-- MATRIX fields: {len(matrix_fields)} (Time series data - use Time Series operators)  
-- REGULAR fields: {len(regular_fields)} (Standard data - use standard operators)
 
-🎯 OPERATOR SELECTION STRATEGY:
-- If VECTOR fields present: Prioritize Cross Sectional operators (normalize, quantile, rank, scale, winsorize, zscore, vec_avg, vec_sum, vec_max, vec_min)
-- If MATRIX fields present: Prioritize Time Series operators (ts_rank, ts_delta, ts_mean, ts_std, ts_corr, ts_regression)
-- Always check field type in brackets [VECTOR/MATRIX/REGULAR] before selecting operators!
-"""
-        
-        # Create field name list for validation
-        valid_fields = [field['id'] for field in data_fields]
-        logger.info(f"Available fields for {region} (delay={optimal_delay}): {len(valid_fields)} fields")
-        logger.info(f"Sample fields: {valid_fields[:5]}")
-        
-        # 50/50 CHANCE: Limited operators OR unlimited operators
-        use_unlimited_operators = random.choice([True, False])
-        
-        # 50/50 CHANCE: Prioritized fields vs Random fields
-        use_prioritized_fields = random.choice([True, False])
-        
-        # Smart operator selection based on field types
-        if vector_fields and len(vector_fields) > 0:
-            # Prioritize Cross Sectional and Vector operators for VECTOR fields
-            cross_sectional_ops = [op for op in self.operators if op['category'] == 'Cross Sectional']
-            vector_ops = [op for op in self.operators if op['name'].startswith('vec_')]
-            preferred_ops = cross_sectional_ops + vector_ops
-            logger.info(f"🎯 VECTOR fields detected: Prioritizing {len(cross_sectional_ops)} Cross Sectional + {len(vector_ops)} Vector operators")
-        else:
-            preferred_ops = self.operators
-            logger.info(f"📊 No VECTOR fields: Using all operators")
-        
-        # Generate random number of operators (1-6) or unlimited for higher margin chances
-        # Special case: EUR region has no operator or field limits
-        if region == "EUR":
-            max_operators = len(self.operators)  # Use all operators for EUR
-            selected_operators = self.operators  # Use all operators
-            
-            if use_prioritized_fields:
-                selected_fields = self._prioritize_fields(data_fields)
-                logger.info(f"EUR region: Using ALL {len(selected_operators)} operators and {len(selected_fields)} prioritized fields (no limits)")
-            else:
-                selected_fields = random.sample(data_fields, len(data_fields))
-                logger.info(f"EUR region: Using ALL {len(selected_operators)} operators and {len(selected_fields)} random fields (no limits)")
-        else:
-            if use_unlimited_operators:
-                max_operators = len(self.operators)  # Use all operators
-                selected_operators = self.operators  # Use all operators
-                logger.info(f"🎲 UNLIMITED operators: Using ALL {len(selected_operators)} operators for template generation")
-            else:
-                max_operators = random.randint(3, 6)
-                # Use underused operators to force diversity, but prioritize field-type appropriate operators
-                if vector_fields and len(vector_fields) > 0:
-                    # Mix preferred operators with underused ones
-                    preferred_count = min(3, len(preferred_ops))
-                    underused_count = max_operators - preferred_count
-                    selected_preferred = random.sample(preferred_ops, preferred_count) if preferred_count > 0 else []
-                    selected_underused = self.get_underused_operators(underused_count) if underused_count > 0 else []
-                    selected_operators = selected_preferred + selected_underused
-                    logger.info(f"🎯 SMART operators: Selected {len(selected_preferred)} field-appropriate + {len(selected_underused)} underused operators")
-                else:
-                    selected_operators = self.get_underused_operators(max_operators)
-                    logger.info(f"🎲 LIMITED operators: Selected {len(selected_operators)} underused operators (max: {max_operators}) for template generation")
-            
-            if use_prioritized_fields:
-                selected_fields = self._prioritize_fields(data_fields)
-                logger.info(f"🎯 FIELD SELECTION: Using prioritized fields for template generation")
-            else:
-                selected_fields = random.sample(data_fields, len(data_fields))
-                logger.info(f"🎲 FIELD SELECTION: Using random fields for template generation")
-        
-        # Create prompt for DeepSeek with better instructions
-        operators_desc = []
-        for op in selected_operators:
-            operators_desc.append(f"- {op['name']}: {op['description']} (Definition: {op['definition']})")
-        
-        # Create fields description from selected fields
-        fields_desc = []
-        for field in selected_fields[:20]:  # Show first 20 selected fields
-            pyramid_mult = field.get('pyramidMultiplier', 1.0)
-            user_count = field.get('userCount', 0)
-            alpha_count = field.get('alphaCount', 0)
-            field_type = field.get('type', 'REGULAR')
-            
-            # Add field type information with operator compatibility
-            if field_type == 'VECTOR':
-                field_type_info = "VECTOR (use Cross Sectional operators: normalize, quantile, rank, scale, winsorize, zscore, vec_avg, vec_sum, vec_max, vec_min)"
-            elif field_type == 'MATRIX':
-                field_type_info = "MATRIX (use Time Series operators: ts_rank, ts_delta, ts_mean, ts_std, ts_corr, ts_regression)"
-            else:
-                field_type_info = "REGULAR (use standard operators)"
-            
-            fields_desc.append(f"- {field['id']}: {field.get('description', 'No description')} [{field_type_info}] (pyramid: {pyramid_mult}, users: {user_count}, alphas: {alpha_count})")
-        
-        # Add field type summary to prompt
-        prompt = f"""
-{field_type_summary}
-
-OPERATOR ARSENAL - USE ONLY THESE WEAPONS:
-{chr(10).join(operators_desc)}
-
-DATA FIELD ARSENAL - USE THESE EXACT FIELDS:
-{chr(10).join(fields_desc)}
-
-{recent_warning}
-
-🔍 FIELD TYPE COMPATIBILITY GUIDE:
-- VECTOR fields: Cross-sectional data (analyst estimates, etc.) → Use Cross Sectional operators: normalize, quantile, rank, scale, winsorize, zscore
-- MATRIX fields: Time series data (price, volume, etc.) → Use Time Series operators: ts_rank, ts_delta, ts_mean, ts_std, ts_corr, ts_regression, vec_avg, vec_sum, vec_max, vec_min
-- REGULAR fields: Standard data fields → Use standard operators
-
-🚨 CRITICAL: Use the EXACT field names from the list above. NEVER use generic placeholders like "field", "field1", "field2", "DATA_FIELD1", etc.
-🚨 FORBIDDEN: "field", "field1", "field2", "DATA_FIELD1", "DATA_FIELD2", "field_name", "data_field"
-✅ REQUIRED: Use actual field names like "anl10_cpxff", "mdl23_bk_rev_stabil", "close", "volume", etc.
-⚠️ CRITICAL: Check field type in brackets [VECTOR/MATRIX/REGULAR] and use appropriate operators!
-
-📋 FIELD TYPE USAGE EXAMPLES:
-- VECTOR field example: normalize(anl4_guiafv4_est) ✅
-- MATRIX field example: ts_rank(anl10_bpsff, 20) ✅
-- REGULAR field example: ts_rank(close, 20) ✅
-- WRONG: ts_rank(anl4_guiafv4_est, 20) ❌ (VECTOR field with time series operator)
-- WRONG: normalize(close) ❌ (REGULAR field with cross-sectional operator)
-
-🔄 SMART FIELD REPLACEMENT:
-- If you want to use time series operators (ts_rank, ts_delta, ts_mean), use MATRIX fields instead of VECTOR fields
-- If you want to use cross-sectional operators (normalize, quantile, rank), use VECTOR fields
-- The system will automatically suggest compatible field replacements
-- Be creative: combine VECTOR and MATRIX fields in innovative ways!
-
-REAL WORLDQUANT BRAIN EXAMPLES FOR REFERENCE:
-{real_examples}
-
-{complexity_constraints}
-
-ULTRA-CRITICAL SYNTAX RULES - ZERO TOLERANCE FOR ERRORS:
-
-RULE #1: DATA FIELDS ARE NEVER OPERATORS - THEY ARE INPUTS!
-ABSOLUTELY FORBIDDEN - DATA FIELDS AS OPERATORS:
-- anl69_best_bps_stddev(anl69_best_bps_stddev(...)) FORBIDDEN
-- mdl23_bk_dra(mdl23_bk_rev_stabil(...)) FORBIDDEN  
-- fn_amortization_of_intangible_assets_a(...) FORBIDDEN
-- ANY_DATA_FIELD_NAME(...) FORBIDDEN
-
-MANDATORY CORRECT SYNTAX - DATA FIELDS AS INPUTS:
-- ts_rank(DATA_FIELD1, 20) CORRECT
-- add(DATA_FIELD1, DATA_FIELD2) CORRECT
-- ts_corr(DATA_FIELD1, DATA_FIELD2, 20) CORRECT
-- operator(DATA_FIELD, parameters) CORRECT
-
-RULE #2: OPERATOR GRAMMAR - PERFECT SYNTAX REQUIRED:
-- operator(field, parameter) CORRECT
-- operator(field1, field2, parameter) CORRECT
-- NO comparison operators: >, <, >=, <=, ==, !=, &&, ||, % FORBIDDEN
-- NO missing commas between parameters FORBIDDEN
-- PERFECTLY balanced parentheses REQUIRED
-
-RULE #3: PARAMETER PRECISION:
-{chr(10).join(parameter_guidelines) if parameter_guidelines else "- All parameters must be positive integers or valid numbers"}
-
-ALPHA GENERATION STRATEGY - MAXIMUM PROFIT POTENTIAL:
-
-1. MOMENTUM STRATEGIES (High Sharpe potential):
-   - ts_rank(DATA_FIELD1, 20) - Price momentum
-   - ts_delta(DATA_FIELD1, 5) - Short-term momentum
-   - rank(DATA_FIELD1) - Cross-sectional momentum
-
-2. MEAN REVERSION STRATEGIES (Risk-adjusted returns):
-   - ts_zscore(DATA_FIELD1, 60) - Statistical mean reversion
-   - group_neutralize(DATA_FIELD1, industry) - Industry-relative mean reversion
-   - ts_ratio(DATA_FIELD1, DATA_FIELD2) - Ratio mean reversion
-
-3. VOLATILITY STRATEGIES (Risk management):
-   - ts_std_dev(DATA_FIELD1, 20) - Volatility measurement
-   - winsorize(DATA_FIELD1, 3) - Outlier management
-   - scale(DATA_FIELD1) - Risk scaling
-
-4. CROSS-SECTIONAL STRATEGIES (Alpha generation):
-   - group_neutralize(ts_rank(DATA_FIELD1, 20), industry) CORRECT
-   - group_zscore(DATA_FIELD1, sector) CORRECT
-   - group_rank(DATA_FIELD1, market) CORRECT
-
-5. SOPHISTICATED COMBINATIONS (Maximum alpha):
-   - ts_rank(group_neutralize(ts_delta(DATA_FIELD1, 5), industry), 20)
-   - group_neutralize(ts_zscore(DATA_FIELD1, 60), sector)
-   - ts_corr(ts_rank(DATA_FIELD1, 20), ts_rank(DATA_FIELD2, 20), 60)
-
-OPERATOR CONSTRAINTS - MANDATORY COMPLIANCE:
-You MUST use ONLY these operators: {', '.join([op['name'] for op in selected_operators])}
-Each template MUST use at least one of these operators.
-Description: {chr(10).join([op['description'] for op in selected_operators])}
-
-FIELD PLACEHOLDERS - EXACT USAGE REQUIRED, remember it's not the field name, it's the placeholder, not DATA_FIELD followed by a number! For example, for data field anl10_cpxff, DATA_FIELD1 is anl10_cpxff, not anl10_cpxff1!
-- DATA_FIELD1: Single-field operations (ts_rank, rank, ts_std_dev, etc.)
-- DATA_FIELD2: Two-field operations (add, subtract, multiply, divide, ts_corr, etc.)
-- DATA_FIELD3: Complex multi-field operations
-- DATA_FIELD4: Advanced combinations
-
-CRITICAL GROUP OPERATOR PARAMETERS:
-- group_neutralize(field, industry) CORRECT
-- group_neutralize(field, sector) CORRECT  
-- group_zscore(field, subindustry) CORRECT
-- group_rank(field, market) CORRECT
-NEVER use generic "group" - always specify: industry, subindustry, sector, market
-
-🚨 CRITICAL VECTOR FIELD HANDLING - ZERO TOLERANCE FOR ERRORS 🚨
-
-VECTOR fields are cross-sectional data and CANNOT use time series operators!
-
-❌ ABSOLUTELY FORBIDDEN - VECTOR fields with time series operators:
-- ts_rank(VECTOR_FIELD, 20) ❌
-- ts_delta(VECTOR_FIELD, 5) ❌  
-- ts_mean(VECTOR_FIELD, 10) ❌
-- ts_std(VECTOR_FIELD, 20) ❌
-- ts_corr(VECTOR_FIELD1, VECTOR_FIELD2, 60) ❌
-- ANY ts_* operator with VECTOR fields ❌
-
-✅ MANDATORY CORRECT USAGE - VECTOR fields with appropriate operators:
-- normalize(VECTOR_FIELD) ✅
-- quantile(VECTOR_FIELD, driver=gaussian, sigma=1.0) ✅
-- rank(VECTOR_FIELD, rate=2) ✅
-- scale(VECTOR_FIELD, scale=1, longscale=1, shortscale=1) ✅
-- winsorize(VECTOR_FIELD, std=4) ✅
-- zscore(VECTOR_FIELD) ✅
-- vec_avg(VECTOR_FIELD) ✅
-- vec_sum(VECTOR_FIELD) ✅
-- vec_max(VECTOR_FIELD) ✅
-- vec_min(VECTOR_FIELD) ✅
-
-🔍 FIELD TYPE IDENTIFICATION:
-- VECTOR fields: Cross-sectional data (analyst estimates, etc.)
-- MATRIX fields: Time series data (price, volume, etc.)
-- REGULAR fields: Standard data fields
-
-⚠️ CRITICAL RULE: Check field type before using operators!
-
-ADVANCED ALPHA PATTERNS - MAXIMUM ALPHA POTENTIAL:
-
-DO NOT ADD 1, 2 ,3 ,4 to the placeholder, it's not the field name, it's the placeholder, not DATA_FIELD followed by a number! For example, for data field anl10_cpxff, DATA_FIELD1 is anl10_cpxff, not anl10_cpxff1!
-
-1. MOMENTUM + NEUTRALIZATION (for REGULAR/MATRIX fields):
-   - group_neutralize(ts_rank(DATA_FIELD1, 20), industry)  # Only for REGULAR/MATRIX fields
-   - group_neutralize(ts_delta(DATA_FIELD1, 5), sector)    # Only for REGULAR/MATRIX fields
-
-2. MEAN REVERSION + CROSS-SECTIONAL (for REGULAR/MATRIX fields):
-   - group_zscore(ts_zscore(DATA_FIELD1, 60), subindustry)  # Only for REGULAR/MATRIX fields
-   - group_rank(ts_ratio(DATA_FIELD1, DATA_FIELD2), market)  # Only for REGULAR/MATRIX fields
-
-3. VOLATILITY + MOMENTUM (for REGULAR/MATRIX fields):
-   - ts_rank(ts_std(DATA_FIELD1, 20), 10)  # Only for REGULAR/MATRIX fields
-   - winsorize(ts_delta(DATA_FIELD1, 5), 3)  # Only for REGULAR/MATRIX fields
-
-4. VECTOR FIELD STRATEGIES (Cross-sectional data):
-   - normalize(DATA_FIELD1) - Cross-sectional normalization
-   - quantile(DATA_FIELD1, driver=gaussian, sigma=1.0) - Quantile transformation
-   - rank(DATA_FIELD1, rate=2) - Cross-sectional ranking
-   - scale(DATA_FIELD1, scale=1, longscale=1, shortscale=1) - Risk scaling
-   - winsorize(DATA_FIELD1, std=4) - Outlier management
-   - zscore(DATA_FIELD1) - Z-score normalization
-   - vec_avg(DATA_FIELD1) - Vector averaging
-   - vec_sum(DATA_FIELD1) - Vector summation
-
-5. SOPHISTICATED NESTED PATTERNS (for REGULAR/MATRIX fields):
-   - ts_rank(group_neutralize(ts_delta(DATA_FIELD1, 5), industry), 20)  # Only for REGULAR/MATRIX fields
-   - group_neutralize(ts_zscore(ts_rank(DATA_FIELD1, 20), 60), sector)  # Only for REGULAR/MATRIX fields
-   - ts_corr(ts_rank(DATA_FIELD1, 20), ts_rank(DATA_FIELD2, 20), 60)  # Only for REGULAR/MATRIX fields
-
-6. VECTOR FIELD COMBINATIONS (for VECTOR fields only):
-   - group_neutralize(normalize(DATA_FIELD1), industry)  # VECTOR field with group neutralization
-   - group_zscore(rank(DATA_FIELD1), sector)  # VECTOR field with group zscore
-   - group_rank(scale(DATA_FIELD1), market)  # VECTOR field with group rank
-
-7. INNOVATIVE COMBINATIONS - "BE LIKE WATER":
-   - add(normalize(DATA_FIELD1), ts_rank(DATA_FIELD2, 20))  # Cross-sectional + Time series
-   - subtract(quantile(DATA_FIELD1), ts_delta(DATA_FIELD2, 5))  # VECTOR + MATRIX innovation
-   - multiply(rank(DATA_FIELD1), vec_avg(DATA_FIELD2))  # Cross-sectional + Vector operations
-   - divide(scale(DATA_FIELD1), ts_mean(DATA_FIELD2, 10))  # Risk scaling + Time series
-   - power(normalize(DATA_FIELD1), 2)  # Squared cross-sectional signals
-   - sqrt(abs(subtract(DATA_FIELD1, DATA_FIELD2)))  # Distance-based alpha
-   - log(add(1, abs(DATA_FIELD1)))  # Log-transformed signals
-   - exp(divide(DATA_FIELD1, DATA_FIELD2))  # Exponential ratios
-   - The combinations are ENDLESS - be creative and innovative!
-
-SUCCESS VALIDATION CHECKLIST:
-- Perfect syntax with balanced parentheses
-- Correct operator parameter counts
-- NO comparison operators (>, <, >=, <=, ==, !=, &&, ||, %)
-- NO missing commas between parameters
-- Realistic field names and appropriate parameters
-- Data fields as INPUTS, not operators
-- Group operators use correct group types (industry, sector, subindustry, market)
-- Vector fields properly wrapped with vec_avg() when needed
-
-🧠 BRUCE LEE PHILOSOPHY - "BE LIKE WATER":
-- Forget what you've learned - be fluid and adaptive
-- Learn the rules, then transcend them through innovation
-- Don't just follow patterns - CREATE new patterns
-- Think beyond conventional combinations: a + b, a - b, a * b, a / b
-- The combinations are ENDLESS - explore the infinite possibilities
-- Be like water - adapt to any field type, any operator combination
-- Sometimes the most powerful alphas come from unexpected combinations
-- Innovation happens when you break free from rigid thinking
-
-🚀 INNOVATION CHALLENGE:
-- Can you create a + b combinations that no one has thought of?
-- Can you find hidden relationships between seemingly unrelated fields?
-- Can you discover new mathematical relationships that generate alpha?
-- Can you combine operators in ways that surprise even the creators?
-- Can you find the "impossible" combinations that actually work?
-
-💡 CREATIVE THINKING PROMPTS:
-- What if you combined VECTOR and MATRIX fields in unexpected ways?
-- What if you used arithmetic operators (add, subtract, multiply, divide) with Cross Sectional operators?
-- What if you nested 3, 4, or even 5 operators deep?
-- What if you used power(), sqrt(), log(), exp() with field combinations?
-- What if you created ratios, differences, and products of different field types?
-- What if you used group operators with VECTOR fields in new ways?
-- What if you combined time series and cross-sectional thinking?
-- The possibilities are INFINITE - be like water and flow with creativity!
-
-FINAL REQUIREMENTS:
-1. Use ONLY the provided operators and fields exactly as listed
-2. Focus on economic intuition and market significance
-3. Combine multiple operators for sophisticated strategies
-4. Use appropriate time periods and parameters
-5. Ensure perfect syntax and balanced parentheses
-6. Generate {num_templates} diverse, profitable alpha expressions
-7. Each template must be immediately usable in WorldQuant Brain
-8. BE LIKE WATER - fluid, adaptive, and endlessly innovative!
-
-RESPONSE FORMAT - JSON ONLY:
-{{"templates": ["template1", "template2", "template3"]}}
-
-Generate {num_templates} GROUNDBREAKING alpha expressions in JSON format:"""
-        
-        # Add parameter guidelines based on operator definitions
-        parameter_guidelines = []
-        for op in selected_operators:
-            if 'd' in op['definition'] and 'd' not in parameter_guidelines:
-                parameter_guidelines.append("- 'd' parameters must be positive integers (e.g., 20, 60, 120)")
-            if 'constant' in op['definition'] and 'constant' not in parameter_guidelines:
-                parameter_guidelines.append("- 'constant' parameters can be numbers (e.g., 0, 1, 0.5)")
-            if 'std' in op['definition'] and 'std' not in parameter_guidelines:
-                parameter_guidelines.append("- 'std' parameters should be positive numbers (e.g., 3, 4)")
-            if 'filter' in op['definition'] and 'filter' not in parameter_guidelines:
-                parameter_guidelines.append("- 'filter' parameters should be true/false")
-        
-        # Add failure patterns to help LLM learn
-        failure_guidance = self.get_failure_guidance(region)
-        
-        # Get real examples from submitted alphas for better reference
-        real_examples = self._get_real_alpha_examples()
-        
-        # Get blacklisted operators for the template
-        blacklisted_operators = self.load_operator_blacklist()
-        blacklist = f"🚫 BLACKLISTED OPERATORS - DO NOT USE THESE:\n{chr(10).join([f'- {op} (BLACKLISTED - DO NOT USE)' for op in blacklisted_operators])}" if blacklisted_operators else "🚫 BLACKLISTED OPERATORS: No operators currently blacklisted"
-
-        # Get recent templates warning
-        recent_warning = self._get_recent_templates_warning()
-
-        # Create region-specific prompt
-        if region == "EUR":
-            complexity_constraints = "TEMPLATE COMPLEXITY: NO LIMITS - Use any number of operators and data fields for maximum flexibility"
-            operator_instruction = "Available Operators (USE ANY COMBINATION - NO LIMITS):"
-            field_instruction = "Available Data Fields (USE ANY COMBINATION - NO LIMITS - These are the EXACT field names available for delay={optimal_delay}):"
-            requirement_15 = "15. EUR REGION: Use any number of operators and data fields for maximum complexity and potential"
-        else:
-            # Check if we're using unlimited operators
-            if max_operators == len(self.operators):
-                complexity_constraints = "TEMPLATE COMPLEXITY: UNLIMITED OPERATORS - Use any number of operators for maximum complexity and potential"
-                operator_instruction = "Available Operators (USE ANY COMBINATION - NO LIMITS):"
-                requirement_15 = "15. UNLIMITED OPERATORS: Use any number of operators for maximum complexity and potential"
-            else:
-                complexity_constraints = f"TEMPLATE COMPLEXITY CONSTRAINTS:\n- Maximum {max_operators} operators per template (for higher margin chances)"
-                operator_instruction = f"Available Operators (USE ONLY THESE - MAX {max_operators} PER TEMPLATE):"
-                requirement_15 = f"15. KEEP TEMPLATES SIMPLE: Use maximum {max_operators} operators per template"
-            
-            field_instruction = f"Available Data Fields (USE ONLY THESE - These are the EXACT field names available for delay={optimal_delay}):"
-
-        prompt = f"""WORLDQUANT BRAIN ALPHA GENERATION EXPERT SYSTEM
-
-You are a REVOLUTIONARY quantitative finance AI that BREAKS CONVENTIONAL PATTERNS and creates INNOVATIVE alpha expressions. Your mission: Generate {num_templates} GROUNDBREAKING alpha expressions for the {region} region that will SHOCK the quantitative finance community with their creativity and innovation.
-
-🚀 INNOVATION MANDATE - THINK OUTSIDE THE BOX:
-- DO NOT create safe, predictable templates that everyone uses
-- PUSH BOUNDARIES with UNCONVENTIONAL operator combinations
-- Think like a DISRUPTIVE QUANT who challenges established methods
-- Create expressions that make other quants say "I never thought of that!"
-- Use operators in UNEXPECTED ways that reveal hidden market patterns
-- Focus on CREATIVE INSIGHTS, not memorized patterns
-
-MISSION CRITICAL SUCCESS FACTORS:
-- MAXIMIZE Sharpe ratio potential through INNOVATIVE approaches
-- MINIMIZE drawdown risk with CREATIVE risk management
-- OPTIMIZE for real-world trading conditions with UNCONVENTIONAL strategies
-- FOCUS on UNEXPLORED financial anomalies and market inefficiencies
-
-REGION INTELLIGENCE:
-- Region: {region} ({self._get_market_context(region)})
-- Universe: {config.universe}
-- Delay: {optimal_delay} (Pyramid Multiplier: {self.pyramid_multipliers[region].get(str(optimal_delay), 1.0)})
-- Max Trade: {config.max_trade}
-
-{complexity_constraints}
-
-OPERATOR ARSENAL - USE ONLY THESE WEAPONS:
-{chr(10).join(operators_desc)}
-
-DATA FIELD ARSENAL - USE THESE EXACT PLACEHOLDERS:
-{chr(10).join(fields_desc)}
-
-{recent_warning}
-
-🔍 FIELD TYPE COMPATIBILITY GUIDE:
-- VECTOR fields: Cross-sectional data (analyst estimates, etc.) → Use Cross Sectional operators: normalize, quantile, rank, scale, winsorize, zscore
-- MATRIX fields: Time series data (price, volume, etc.) → Use Time Series operators: ts_rank, ts_delta, ts_mean, ts_std, ts_corr, ts_regression, vec_avg, vec_sum, vec_max, vec_min
-- REGULAR fields: Standard data fields → Use standard operators
-
-🚨 CRITICAL: Use the EXACT field names from the list above. NEVER use generic placeholders like "field", "field1", "field2", "DATA_FIELD1", etc.
-🚨 FORBIDDEN: "field", "field1", "field2", "DATA_FIELD1", "DATA_FIELD2", "field_name", "data_field"
-✅ REQUIRED: Use actual field names like "anl10_cpxff", "mdl23_bk_rev_stabil", "close", "volume", etc.
-⚠️ CRITICAL: Check field type in brackets [VECTOR/MATRIX/REGULAR] and use appropriate operators!
-
-📋 FIELD TYPE USAGE EXAMPLES:
-- VECTOR field example: normalize(anl4_guiafv4_est) ✅
-- MATRIX field example: ts_rank(anl10_bpsff, 20) ✅
-- REGULAR field example: ts_rank(close, 20) ✅
-- WRONG: ts_rank(anl4_guiafv4_est, 20) ❌ (VECTOR field with time series operator)
-- WRONG: normalize(close) ❌ (REGULAR field with cross-sectional operator)
-
-🔄 SMART FIELD REPLACEMENT:
-- If you want to use time series operators (ts_rank, ts_delta, ts_mean), use MATRIX fields instead of VECTOR fields
-- If you want to use cross-sectional operators (normalize, quantile, rank), use VECTOR fields
-- The system will automatically suggest compatible field replacements
-- Be creative: combine VECTOR and MATRIX fields in innovative ways!
-
-REAL WORLDQUANT BRAIN EXAMPLES FOR REFERENCE:
-{real_examples}
-
-{failure_guidance}
-
-{blacklist}
-
-ULTRA-CRITICAL SYNTAX RULES - ZERO TOLERANCE FOR ERRORS:
-
-RULE #1: DATA FIELDS ARE NEVER OPERATORS - THEY ARE INPUTS!
-ABSOLUTELY FORBIDDEN - DATA FIELDS AS OPERATORS:
-- anl69_best_bps_stddev(anl69_best_bps_stddev(...)) FORBIDDEN
-- mdl23_bk_rev_stabil(mdl23_bk_rev_stabil(...)) FORBIDDEN  
-- fn_amortization_of_intangible_assets_a(...) FORBIDDEN
-- ANY_DATA_FIELD_NAME(...) FORBIDDEN
-
-MANDATORY CORRECT SYNTAX - DATA FIELDS AS INPUTS:
-- ts_rank(DATA_FIELD1, 20) CORRECT
-- add(DATA_FIELD1, DATA_FIELD2) CORRECT
-- ts_corr(DATA_FIELD1, DATA_FIELD2, 20) CORRECT
-- operator(DATA_FIELD, parameters) CORRECT
-
-RULE #2: OPERATOR GRAMMAR - PERFECT SYNTAX REQUIRED:
-- operator(field, parameter) CORRECT
-- operator(field1, field2, parameter) CORRECT
-- NO comparison operators: >, <, >=, <=, ==, !=, &&, ||, % FORBIDDEN
-- NO missing commas between parameters FORBIDDEN
-- PERFECTLY balanced parentheses REQUIRED
-
-RULE #3: PARAMETER PRECISION:
-{chr(10).join(parameter_guidelines) if parameter_guidelines else "- All parameters must be positive integers or valid numbers"}
-
-ALPHA GENERATION STRATEGY - MAXIMUM PROFIT POTENTIAL:
-
-1. MOMENTUM STRATEGIES (High Sharpe potential):
-   - ts_rank(DATA_FIELD1, 20) - Price momentum
-   - ts_delta(DATA_FIELD1, 5) - Short-term momentum
-   - rank(DATA_FIELD1) - Cross-sectional momentum
-
-2. MEAN REVERSION STRATEGIES (Risk-adjusted returns):
-   - ts_zscore(DATA_FIELD1, 60) - Statistical mean reversion
-   - group_neutralize(DATA_FIELD1, industry) - Industry-relative mean reversion
-   - ts_ratio(DATA_FIELD1, DATA_FIELD2) - Ratio mean reversion
-
-3. VOLATILITY STRATEGIES (Risk management):
-   - ts_std_dev(DATA_FIELD1, 20) - Volatility measurement
-   - winsorize(DATA_FIELD1, 3) - Outlier management
-   - scale(DATA_FIELD1) - Risk scaling
-
-4. CROSS-SECTIONAL STRATEGIES (Alpha generation):
-   - group_neutralize(ts_rank(DATA_FIELD1, 20), industry) CORRECT
-   - group_zscore(DATA_FIELD1, sector) CORRECT
-   - group_rank(DATA_FIELD1, market) CORRECT
-
-5. SOPHISTICATED COMBINATIONS (Maximum alpha):
-   - ts_rank(group_neutralize(ts_delta(DATA_FIELD1, 5), industry), 20)
-   - group_neutralize(ts_zscore(DATA_FIELD1, 60), sector)
-   - ts_corr(ts_rank(DATA_FIELD1, 20), ts_rank(DATA_FIELD2, 20), 60)
-
-OPERATOR CONSTRAINTS - MANDATORY COMPLIANCE:
-You MUST use ONLY these operators: {', '.join([op['name'] for op in selected_operators])}
-Each template MUST use at least one of these operators.
-Description: {chr(10).join([op['description'] for op in selected_operators])}
-
-FIELD PLACEHOLDERS - EXACT USAGE REQUIRED, remember it's not the field name, it's the placeholder, not DATA_FIELD followed by a number! For example, for data field anl10_cpxff, DATA_FIELD1 is anl10_cpxff, not anl10_cpxff1!
-- DATA_FIELD1: Single-field operations (ts_rank, rank, ts_std_dev, etc.)
-- DATA_FIELD2: Two-field operations (add, subtract, multiply, divide, ts_corr, etc.)
-- DATA_FIELD3: Complex multi-field operations
-- DATA_FIELD4: Advanced combinations
-
-CRITICAL GROUP OPERATOR PARAMETERS:
-- group_neutralize(field, industry) CORRECT
-- group_neutralize(field, sector) CORRECT  
-- group_zscore(field, subindustry) CORRECT
-- group_rank(field, market) CORRECT
-NEVER use generic "group" - always specify: industry, subindustry, sector, market
-
-🚨 CRITICAL VECTOR FIELD HANDLING - ZERO TOLERANCE FOR ERRORS 🚨
-
-VECTOR fields are cross-sectional data and CANNOT use time series operators!
-
-❌ ABSOLUTELY FORBIDDEN - VECTOR fields with time series operators:
-- ts_rank(VECTOR_FIELD, 20) ❌
-- ts_delta(VECTOR_FIELD, 5) ❌  
-- ts_mean(VECTOR_FIELD, 10) ❌
-- ts_std(VECTOR_FIELD, 20) ❌
-- ts_corr(VECTOR_FIELD1, VECTOR_FIELD2, 60) ❌
-- ANY ts_* operator with VECTOR fields ❌
-
-✅ MANDATORY CORRECT USAGE - VECTOR fields with appropriate operators:
-- normalize(VECTOR_FIELD) ✅
-- quantile(VECTOR_FIELD, driver=gaussian, sigma=1.0) ✅
-- rank(VECTOR_FIELD, rate=2) ✅
-- scale(VECTOR_FIELD, scale=1, longscale=1, shortscale=1) ✅
-- winsorize(VECTOR_FIELD, std=4) ✅
-- zscore(VECTOR_FIELD) ✅
-- vec_avg(VECTOR_FIELD) ✅
-- vec_sum(VECTOR_FIELD) ✅
-- vec_max(VECTOR_FIELD) ✅
-- vec_min(VECTOR_FIELD) ✅
-
-🔍 FIELD TYPE IDENTIFICATION:
-- VECTOR fields: Cross-sectional data (analyst estimates, etc.)
-- MATRIX fields: Time series data (price, volume, etc.)
-- REGULAR fields: Standard data fields
-
-⚠️ CRITICAL RULE: Check field type before using operators!
-
-ADVANCED ALPHA PATTERNS - MAXIMUM ALPHA POTENTIAL:
-
-DO NOT ADD 1, 2 ,3 ,4 to the placeholder, it's not the field name, it's the placeholder, not DATA_FIELD followed by a number! For example, for data field anl10_cpxff, DATA_FIELD1 is anl10_cpxff, not anl10_cpxff1!
-
-1. MOMENTUM + NEUTRALIZATION (for REGULAR/MATRIX fields):
-   - group_neutralize(ts_rank(DATA_FIELD1, 20), industry)  # Only for REGULAR/MATRIX fields
-   - group_neutralize(ts_delta(DATA_FIELD1, 5), sector)    # Only for REGULAR/MATRIX fields
-
-2. MEAN REVERSION + CROSS-SECTIONAL (for REGULAR/MATRIX fields):
-   - group_zscore(ts_zscore(DATA_FIELD1, 60), subindustry)  # Only for REGULAR/MATRIX fields
-   - group_rank(ts_ratio(DATA_FIELD1, DATA_FIELD2), market)  # Only for REGULAR/MATRIX fields
-
-3. VOLATILITY + MOMENTUM (for REGULAR/MATRIX fields):
-   - ts_rank(ts_std(DATA_FIELD1, 20), 10)  # Only for REGULAR/MATRIX fields
-   - winsorize(ts_delta(DATA_FIELD1, 5), 3)  # Only for REGULAR/MATRIX fields
-
-4. VECTOR FIELD STRATEGIES (Cross-sectional data):
-   - normalize(DATA_FIELD1) - Cross-sectional normalization
-   - quantile(DATA_FIELD1, driver=gaussian, sigma=1.0) - Quantile transformation
-   - rank(DATA_FIELD1, rate=2) - Cross-sectional ranking
-   - scale(DATA_FIELD1, scale=1, longscale=1, shortscale=1) - Risk scaling
-   - winsorize(DATA_FIELD1, std=4) - Outlier management
-   - zscore(DATA_FIELD1) - Z-score normalization
-   - vec_avg(DATA_FIELD1) - Vector averaging
-   - vec_sum(DATA_FIELD1) - Vector summation
-
-5. SOPHISTICATED NESTED PATTERNS (for REGULAR/MATRIX fields):
-   - ts_rank(group_neutralize(ts_delta(DATA_FIELD1, 5), industry), 20)  # Only for REGULAR/MATRIX fields
-   - group_neutralize(ts_zscore(ts_rank(DATA_FIELD1, 20), 60), sector)  # Only for REGULAR/MATRIX fields
-   - ts_corr(ts_rank(DATA_FIELD1, 20), ts_rank(DATA_FIELD2, 20), 60)  # Only for REGULAR/MATRIX fields
-
-6. VECTOR FIELD COMBINATIONS (for VECTOR fields only):
-   - group_neutralize(normalize(DATA_FIELD1), industry)  # VECTOR field with group neutralization
-   - group_zscore(rank(DATA_FIELD1), sector)  # VECTOR field with group zscore
-   - group_rank(scale(DATA_FIELD1), market)  # VECTOR field with group rank
-
-7. INNOVATIVE COMBINATIONS - "BE LIKE WATER":
-   - add(normalize(DATA_FIELD1), ts_rank(DATA_FIELD2, 20))  # Cross-sectional + Time series
-   - subtract(quantile(DATA_FIELD1), ts_delta(DATA_FIELD2, 5))  # VECTOR + MATRIX innovation
-   - multiply(rank(DATA_FIELD1), vec_avg(DATA_FIELD2))  # Cross-sectional + Vector operations
-   - divide(scale(DATA_FIELD1), ts_mean(DATA_FIELD2, 10))  # Risk scaling + Time series
-   - power(normalize(DATA_FIELD1), 2)  # Squared cross-sectional signals
-   - sqrt(abs(subtract(DATA_FIELD1, DATA_FIELD2)))  # Distance-based alpha
-   - log(add(1, abs(DATA_FIELD1)))  # Log-transformed signals
-   - exp(divide(DATA_FIELD1, DATA_FIELD2))  # Exponential ratios
-   - The combinations are ENDLESS - be creative and innovative!
-
-SUCCESS VALIDATION CHECKLIST:
-- Perfect syntax with balanced parentheses
-- Correct operator parameter counts
-- NO comparison operators (>, <, >=, <=, ==, !=, &&, ||, %)
-- NO missing commas between parameters
-- Realistic field names and appropriate parameters
-- Data fields as INPUTS, not operators
-- Group operators use correct group types (industry, sector, subindustry, market)
-- Vector fields properly wrapped with vec_avg() when needed
-
-🧠 BRUCE LEE PHILOSOPHY - "BE LIKE WATER":
-- Forget what you've learned - be fluid and adaptive
-- Learn the rules, then transcend them through innovation
-- Don't just follow patterns - CREATE new patterns
-- Think beyond conventional combinations: a + b, a - b, a * b, a / b
-- The combinations are ENDLESS - explore the infinite possibilities
-- Be like water - adapt to any field type, any operator combination
-- Sometimes the most powerful alphas come from unexpected combinations
-- Innovation happens when you break free from rigid thinking
-
-🚀 INNOVATION CHALLENGE:
-- Can you create a + b combinations that no one has thought of?
-- Can you find hidden relationships between seemingly unrelated fields?
-- Can you discover new mathematical relationships that generate alpha?
-- Can you combine operators in ways that surprise even the creators?
-- Can you find the "impossible" combinations that actually work?
-
-💡 CREATIVE THINKING PROMPTS:
-- What if you combined VECTOR and MATRIX fields in unexpected ways?
-- What if you used arithmetic operators (add, subtract, multiply, divide) with Cross Sectional operators?
-- What if you nested 3, 4, or even 5 operators deep?
-- What if you used power(), sqrt(), log(), exp() with field combinations?
-- What if you created ratios, differences, and products of different field types?
-- What if you used group operators with VECTOR fields in new ways?
-- What if you combined time series and cross-sectional thinking?
-- The possibilities are INFINITE - be like water and flow with creativity!
-
-FINAL REQUIREMENTS:
-1. Use ONLY the provided operators and fields exactly as listed
-2. Focus on economic intuition and market significance
-3. Combine multiple operators for sophisticated strategies
-4. Use appropriate time periods and parameters
-5. Ensure perfect syntax and balanced parentheses
-6. Generate {num_templates} diverse, profitable alpha expressions
-7. Each template must be immediately usable in WorldQuant Brain
-8. BE LIKE WATER - fluid, adaptive, and endlessly innovative!
-
-RESPONSE FORMAT - JSON ONLY:
-{{"templates": ["template1", "template2", "template3"]}}
-
-Generate {num_templates} GROUNDBREAKING alpha expressions in JSON format:"""
-
-        # Call Ollama API
-        response = self.call_ollama_api(prompt)
-        if not response:
-            logger.error(f"Failed to get response from Ollama for region {region}")
-            return []
-        
-        # Parse and validate the JSON response
-        templates = []
-        try:
-            # Parse JSON response
-            response_data = json.loads(response)
-            
-            # Extract templates from JSON
-            if 'templates' in response_data:
-                template_list = response_data['templates']
-            elif isinstance(response_data, list):
-                template_list = response_data
-            else:
-                logger.error("Invalid JSON format: expected 'templates' key or array")
-                return []
-            
-            for template in template_list:
-                if isinstance(template, str) and template.strip():
-                    template = template.strip()
-                    
-                    # IMMEDIATE FAIL for comparison operators - don't even process further
-                    comparison_ops = ['>', '<', '>=', '<=', '==', '!=', '&&', '||', '%']
-                    for op in comparison_ops:
-                        if op in template:
-                            logger.warning(f"🚫 IMMEDIATE FAIL: Template contains forbidden comparison operator '{op}': {template}")
-                            continue
-                    
-                    # Replace field placeholders with actual field names
-                    template = self.replace_field_placeholders(template, data_fields, region)
-                    
-                    # NO IMMEDIATE FAIL - Let simulation handle validation
-                    if self._has_data_field_as_operator(template):
-                        logger.warning(f"⚠️ Template uses data fields as operators: {template}")
-                        logger.warning(f"   Proceeding to simulation - let WorldQuant Brain validate")
-                    
-                    # CRITICAL: Check for hallucinated field names that don't exist
-                    if self._has_hallucinated_fields(template, valid_fields):
-                        logger.warning(f"🚫 IMMEDIATE FAIL: Template contains hallucinated field names: {template}")
-                        continue
-                    
-                    # CRITICAL: Check for cross-region field contamination
-                    if self._has_cross_region_fields(template, data_fields, region):
-                        logger.warning(f"🚫 IMMEDIATE FAIL: Template contains fields from wrong region: {template}")
-                        continue
-                    
-                    # CRITICAL: Check if operators exist in operatorRAW.json
-                    template_operators = self.extract_operators_from_template(template)
-                    invalid_operators = []
-                    for op in template_operators:
-                        if not any(valid_op['name'] == op for valid_op in self.operators):
-                            invalid_operators.append(op)
-                    
-                    if invalid_operators:
-                        logger.warning(f"🚫 INVALID OPERATORS: Template uses operators not in operatorRAW.json: {invalid_operators}")
-                        logger.warning(f"   Template: {template}")
-                        logger.warning(f"   RETRYING with valid operators only...")
-                        
-                        # Retry with valid operators only
-                        retry_prompt = f"""
-🚨 CRITICAL ERROR! 🚨
-
-You just generated a template with INVALID operators that don't exist in the system!
-
-{blacklist}
-
-CURRENT TEMPLATE: {template}
-INVALID OPERATORS: {invalid_operators}
-
-VALID OPERATORS ONLY:
-{', '.join([op['name'] for op in selected_operators[:15]])}
-
-REQUIREMENTS:
-- Use ONLY operators from the valid list above
-- Each template MUST use at least {min_operators} valid operators
-- Create complex expressions with multiple valid operators
-
-EXAMPLES OF GOOD TEMPLATES:
-- ts_rank(ts_corr(DATA_FIELD1, DATA_FIELD2, 20), 10)  # 2 valid operators
-- add(ts_rank(DATA_FIELD1, 20), multiply(DATA_FIELD2, 0.5))  # 3 valid operators
-- max(ts_rank(DATA_FIELD1, 20), ts_corr(DATA_FIELD2, DATA_FIELD3, 10))  # 3 valid operators
-
-Generate {num_templates} templates using ONLY valid operators!
-
-Return JSON format: {{"templates": ["template1", "template2", "template3"]}}
-"""
-                        try:
-                            retry_response = self.call_ollama_api(retry_prompt)
-                            if retry_response:
-                                # Parse the retry response
-                                try:
-                                    retry_data = json.loads(retry_response)
-                                    if 'templates' in retry_data:
-                                        retry_template_list = retry_data['templates']
-                                    elif isinstance(retry_data, list):
-                                        retry_template_list = retry_data
-                                    else:
-                                        logger.error("Invalid retry JSON format")
-                                        continue
-                                    
-                                    # Use the first retry template
-                                    if retry_template_list and isinstance(retry_template_list[0], str):
-                                        retry_template = retry_template_list[0].strip()
-                                        
-                                        # Validate the retry template has only valid operators
-                                        retry_operators = self.extract_operators_from_template(retry_template)
-                                        retry_invalid_operators = [op for op in retry_operators if not any(valid_op['name'] == op for valid_op in self.operators)]
-                                        
-                                        if not retry_invalid_operators:
-                                            logger.info(f"✅ RETRY SUCCESS: Fixed invalid operators issue")
-                                            template = retry_template
-                                        else:
-                                            logger.error(f"❌ RETRY FAILED: Still has invalid operators {retry_invalid_operators}")
-                                            # Don't skip - use original template
-                                            logger.info(f"🔄 FALLBACK: Using original template after retry still has invalid operators")
-                                            # Continue with original template instead of skipping
-                                    else:
-                                        logger.error("No valid retry template found")
-                                        # Don't skip - use original template
-                                        logger.info(f"🔄 FALLBACK: Using original template after no valid retry found")
-                                        # Continue with original template instead of skipping
-                                        
-                                except json.JSONDecodeError as json_error:
-                                    logger.error(f"❌ RETRY JSON PARSE ERROR: {json_error}")
-                                    # Don't skip - use original template
-                                    logger.info(f"🔄 FALLBACK: Using original template after JSON parse error")
-                                    # Continue with original template instead of skipping
-                            else:
-                                logger.error(f"❌ RETRY API FAILED - will try again with different approach")
-                                logger.error(f"🔍 RETRY FAILURE DEBUG:")
-                                logger.error(f"   Retry response was: {retry_response}")
-                                logger.error(f"   Retry response type: {type(retry_response)}")
-                                logger.error(f"   Retry response is None: {retry_response is None}")
-                                
-                                # Don't skip - try a different retry strategy
-                                retry_prompt_simple = f"""Generate 1 alpha template using operators: {', '.join([op['name'] for op in selected_operators[:5]])}
-
-{blacklist}
-
-Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
-                                
-                                logger.info(f"🔍 SIMPLE RETRY DEBUG:")
-                                logger.info(f"   Simple retry prompt: {retry_prompt_simple}")
-                                
-                                try:
-                                    simple_retry = self.call_ollama_api(retry_prompt_simple)
-                                    logger.info(f"🔍 SIMPLE RETRY RESPONSE DEBUG:")
-                                    logger.info(f"   Simple retry response: {simple_retry}")
-                                    logger.info(f"   Simple retry response type: {type(simple_retry)}")
-                                    logger.info(f"   Simple retry response is None: {simple_retry is None}")
-                                    
-                                    if simple_retry:
-                                        retry_data = json.loads(simple_retry)
-                                        logger.info(f"   Parsed simple retry data: {retry_data}")
-                                        if 'templates' in retry_data and retry_data['templates']:
-                                            template = retry_data['templates'][0]
-                                            logger.info(f"✅ SIMPLE RETRY SUCCESS: Using fallback template")
-                                        else:
-                                            logger.error(f"❌ SIMPLE RETRY FAILED - using original template")
-                                    else:
-                                        logger.error(f"❌ SIMPLE RETRY API FAILED - using original template")
-                                except Exception as e:
-                                    logger.error(f"❌ SIMPLE RETRY ERROR: {e} - using original template")
-                                    logger.error(f"   Exception type: {type(e).__name__}")
-                                    logger.error(f"   Exception details: {str(e)}")
-                                # Continue with the original template instead of skipping
-                                
-                        except Exception as retry_error:
-                            logger.error(f"❌ RETRY ERROR: {retry_error}")
-                            # Don't skip - use a simple fallback template
-                            fallback_template = f"ts_rank({selected_fields[0]['id'] if selected_fields else 'close'}, 20)"
-                            logger.info(f"🔄 FALLBACK: Using simple template: {fallback_template}")
-                            template = fallback_template
-                            # Continue processing this template instead of skipping
-                    
-                    # CRITICAL: Check minimum operator count
-                    min_operators = 3 if not use_unlimited_operators else 1
-                    if len(template_operators) < min_operators:
-                        logger.warning(f"⚠️ INSUFFICIENT OPERATORS: Template has {len(template_operators)} operators, need at least {min_operators}")
-                        logger.warning(f"   Template: {template}")
-                        logger.warning(f"   RETRYING with stronger operator count requirement...")
-                        
-                        # Retry with stronger operator count requirement
-                        retry_prompt = f"""
-🚨 CRITICAL ERROR! 🚨
-
-You just generated a template with only {len(template_operators)} operators, but you MUST use at least {min_operators} operators!
-
-CURRENT TEMPLATE: {template}
-OPERATORS FOUND: {template_operators}
-
-{blacklist}
-
-REQUIREMENTS:
-- MINIMUM {min_operators} operators per template
-- Use operators from this list: {', '.join([op['name'] for op in selected_operators[:10]])}
-- Create complex expressions with multiple operators
-
-REAL SUBMITTED ALPHA EXAMPLES:
-- -ts_rank(ts_zscore(ebitda, 120), 20)  # 3 operators - EBITDA Mean Reversion
-- ts_rank(ts_delta(close, 5), 20)  # 2 operators - Price momentum
-- group_neutralize(ts_zscore(volume, 60), industry)  # 2 operators - Industry-neutral volume
-
-{real_examples}
-
-Generate {num_templates} templates using AT LEAST {min_operators} operators each!
-
-Return JSON format: {{"templates": ["template1", "template2", "template3"]}}
-"""
-                        try:
-                            retry_response = self.call_ollama_api(retry_prompt)
-                            if retry_response:
-                                # Parse the retry response
-                                try:
-                                    retry_data = json.loads(retry_response)
-                                    if 'templates' in retry_data:
-                                        retry_template_list = retry_data['templates']
-                                    elif isinstance(retry_data, list):
-                                        retry_template_list = retry_data
-                                    else:
-                                        logger.error("Invalid retry JSON format")
-                                        continue
-                                    
-                                    # Use the first retry template
-                                    if retry_template_list and isinstance(retry_template_list[0], str):
-                                        retry_template = retry_template_list[0].strip()
-                                        
-                                        # Replace field placeholders in retry template
-                                        retry_template = self.replace_field_placeholders(retry_template, data_fields, region)
-                                        
-                                        # Validate the retry template has enough operators
-                                        retry_operators = self.extract_operators_from_template(retry_template)
-                                        if len(retry_operators) >= min_operators:
-                                            logger.info(f"✅ RETRY SUCCESS: Fixed operator count issue")
-                                            template = retry_template
-                                        else:
-                                            logger.error(f"❌ RETRY FAILED: Still has {len(retry_operators)} operators (need {min_operators})")
-                                            continue
-                                    else:
-                                        logger.error("No valid retry template found")
-                                        # Don't skip - use original template
-                                        logger.info(f"🔄 FALLBACK: Using original template after no valid retry found")
-                                        # Continue with original template instead of skipping
-                                        
-                                except json.JSONDecodeError as json_error:
-                                    logger.error(f"❌ RETRY JSON PARSE ERROR: {json_error}")
-                                    # Don't skip - use original template
-                                    logger.info(f"🔄 FALLBACK: Using original template after JSON parse error")
-                                    # Continue with original template instead of skipping
-                            else:
-                                logger.error(f"❌ RETRY API FAILED - will try again with different approach")
-                                logger.error(f"🔍 RETRY FAILURE DEBUG:")
-                                logger.error(f"   Retry response was: {retry_response}")
-                                logger.error(f"   Retry response type: {type(retry_response)}")
-                                logger.error(f"   Retry response is None: {retry_response is None}")
-                                
-                                # Don't skip - try a different retry strategy
-                                retry_prompt_simple = f"""Generate 1 alpha template using operators: {', '.join([op['name'] for op in selected_operators[:5]])}
-
-{blacklist}
-
-Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
-                                
-                                logger.info(f"🔍 SIMPLE RETRY DEBUG:")
-                                logger.info(f"   Simple retry prompt: {retry_prompt_simple}")
-                                
-                                try:
-                                    simple_retry = self.call_ollama_api(retry_prompt_simple)
-                                    logger.info(f"🔍 SIMPLE RETRY RESPONSE DEBUG:")
-                                    logger.info(f"   Simple retry response: {simple_retry}")
-                                    logger.info(f"   Simple retry response type: {type(simple_retry)}")
-                                    logger.info(f"   Simple retry response is None: {simple_retry is None}")
-                                    
-                                    if simple_retry:
-                                        retry_data = json.loads(simple_retry)
-                                        logger.info(f"   Parsed simple retry data: {retry_data}")
-                                        if 'templates' in retry_data and retry_data['templates']:
-                                            template = retry_data['templates'][0]
-                                            logger.info(f"✅ SIMPLE RETRY SUCCESS: Using fallback template")
-                                        else:
-                                            logger.error(f"❌ SIMPLE RETRY FAILED - using original template")
-                                    else:
-                                        logger.error(f"❌ SIMPLE RETRY API FAILED - using original template")
-                                except Exception as e:
-                                    logger.error(f"❌ SIMPLE RETRY ERROR: {e} - using original template")
-                                    logger.error(f"   Exception type: {type(e).__name__}")
-                                    logger.error(f"   Exception details: {str(e)}")
-                                # Continue with the original template instead of skipping
-                                
-                        except Exception as retry_error:
-                            logger.error(f"❌ RETRY ERROR: {retry_error}")
-                            # Don't skip - use a simple fallback template
-                            fallback_template = f"ts_rank({selected_fields[0]['id'] if selected_fields else 'close'}, 20)"
-                            logger.info(f"🔄 FALLBACK: Using simple template: {fallback_template}")
-                            template = fallback_template
-                            # Continue processing this template instead of skipping
-                    
-                    # Validate template
-                    is_valid, error_msg = self.validate_template_syntax(template, valid_fields)
-                    if is_valid:
-                        fields_used = self.extract_fields_from_template(template, data_fields)
-                        templates.append({
-                            'region': region,
-                            'template': template,
-                            'operators_used': self.extract_operators_from_template(template),
-                            'fields_used': fields_used,
-                            'data_field_substitution': True
-                        })
-                        logger.info(f"Valid template: {template[:50]}... (fields: {fields_used})")
-                    else:
-                        logger.warning(f"Invalid template rejected: {template[:50]}... - {error_msg}")
-                        
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON response: {e}")
-            # Fallback to line-by-line parsing if JSON parsing fails
-            lines = response.strip().split('\n')
-            for line in lines:
-                line = line.strip()
-                if line and not line.startswith('#') and not line.startswith('//'):
-                    # Clean up the template
-                    template = re.sub(r'^\d+\.\s*', '', line)  # Remove numbering
-                    template = template.strip()
-                    if template:
-                        # Replace field placeholders with actual field names
-                        template = self.replace_field_placeholders(template, data_fields, region)
-                        
-                        # NO IMMEDIATE FAIL - Let simulation handle validation
-                        if self._has_data_field_as_operator(template):
-                            logger.warning(f"⚠️ Template uses data fields as operators: {template}")
-                            logger.warning(f"   Proceeding to simulation - let WorldQuant Brain validate")
-                        
-                        # CRITICAL: Check for hallucinated field names that don't exist
-                        if self._has_hallucinated_fields(template, valid_fields):
-                            logger.warning(f"🚫 IMMEDIATE FAIL: Template contains hallucinated field names: {template}")
-                            continue
-                        
-                        # Validate template
-                        is_valid, error_msg = self.validate_template_syntax(template, valid_fields)
-                        if is_valid:
-                            fields_used = self.extract_fields_from_template(template, data_fields)
-                            templates.append({
-                                'region': region,
-                                'template': template,
-                                'operators_used': self.extract_operators_from_template(template),
-                                'fields_used': fields_used,
-                                'data_field_substitution': True
-                            })
-                            logger.info(f"Valid template: {template[:50]}... (fields: {fields_used})")
-                        else:
-                            logger.warning(f"Invalid template rejected: {template[:50]}... - {error_msg}")
-        
-        logger.info(f"Generated {len(templates)} valid templates for region {region}")
-        
-        # Note: Templates are NOT saved to templates section here
-        # They will only be saved after successful simulation in _add_to_results()
-        
-        return templates
-    
     def decide_next_action(self):
         """
         Use multi-arm bandit to decide next action: explore new template or exploit existing one
@@ -6567,7 +5989,7 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                 logger.info("Loaded previous progress for exploit data...")
         
         # Update metadata
-        self.all_results['metadata']['regions'] = list(self.region_configs.keys())
+        self.all_results['metadata']['regions'] = regions
         self.all_results['metadata']['templates_per_region'] = templates_per_region
         
         iteration = 0
@@ -6586,35 +6008,50 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                 logger.info(f"\n🔄 === ITERATION {iteration} ===")
                 logger.info(f"📊 Active futures: {len(self.active_futures)}/{self.max_concurrent}")
                 logger.info(f"📊 Completed: {self.completed_count}, Successful: {self.successful_count}, Failed: {self.failed_count}")
+                logger.info(f"🧵 Thread count: {self.thread_count}, Completed threads: {self.completed_threads}")
+                logger.info(f"🧵 Thread exceptions: {self.thread_exception_count}")
                 
-                # Process completed futures
-                self._process_completed_futures()
+                try:
+                    # Process completed futures
+                    self._process_completed_futures()
+                except Exception as e:
+                    logger.error(f"❌ ERROR PROCESSING COMPLETED FUTURES: {e}")
+                    import traceback
+                    logger.error(f"❌ TRACEBACK: {traceback.format_exc()}")
+                    # Continue execution even if processing fails
                 
-                # Check future health every iteration
-                healthy, slow, stuck = self._check_future_health()
-                if stuck > 0:
-                    logger.warning(f"🚨 CRITICAL: {stuck} futures are stuck! Consider restarting if this persists.")
-                
-                # Show detailed status of all futures every iteration
-                self._show_all_futures_status()
-                
-                # Check executor health if there are stuck futures
-                if stuck > 0:
-                    self._check_executor_health()
-                
-                # Force cleanup if too many futures are stuck
-                if stuck >= 3:
-                    logger.warning(f"🚨 FORCE CLEANUP: {stuck} futures stuck, forcing cleanup...")
-                    self._force_cleanup_stuck_futures()
-                
-                # Fill available slots with new concurrent tasks
-                self._fill_available_slots_concurrent()
-                
-                # Save progress every iteration
-                self.save_progress()
-                
-                # Wait a bit before next iteration
-                time.sleep(2)
+                try:
+                    # Check future health every iteration
+                    healthy, slow, stuck = self._check_future_health()
+                    if stuck > 0:
+                        logger.warning(f"🚨 CRITICAL: {stuck} futures are stuck! Consider restarting if this persists.")
+                    
+                    # Show detailed status of all futures every iteration
+                    self._show_all_futures_status()
+                    
+                    # Check executor health if there are stuck futures
+                    if stuck > 0:
+                        self._check_executor_health()
+                    
+                    # Force cleanup if too many futures are stuck
+                    if stuck >= 3:
+                        logger.warning(f"🚨 FORCE CLEANUP: {stuck} futures stuck, forcing cleanup...")
+                        self._force_cleanup_stuck_futures()
+                    
+                    # Fill available slots with new concurrent tasks
+                    self._fill_available_slots_concurrent()
+                    
+                    # Save progress every iteration
+                    self.save_progress()
+                    
+                    # Wait a bit before next iteration
+                    time.sleep(2)
+                except Exception as e:
+                    logger.error(f"❌ ERROR IN MAIN LOOP ITERATION: {e}")
+                    import traceback
+                    logger.error(f"❌ TRACEBACK: {traceback.format_exc()}")
+                    # Continue execution even if iteration fails
+                    time.sleep(2)
                     
         except KeyboardInterrupt:
             logger.info("\n🛑 Received interrupt signal. Stopping gracefully...")
@@ -7450,7 +6887,8 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
         timed_out_futures = []
         current_time = time.time()
         
-        for future_id, future in self.active_futures.items():
+        # Create a copy of the items to avoid "dictionary changed size during iteration" error
+        for future_id, future in list(self.active_futures.items()):
             # Check for timeout
             start_time = self.future_start_times.get(future_id, current_time)
             elapsed_time = current_time - start_time
@@ -7487,8 +6925,8 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                         else:
                             logger.info(f"❌ CONCURRENT simulation FAILED: {result.template[:50]}... - {error_msg}")
                         
-                        # Learn from the failure
-                        self._learn_from_simulation_failure(result.template, error_msg)
+                        # Handle any simulation error by regenerating template with error feedback
+                        self._handle_simulation_error(result.template, error_msg, settings)
                     else:
                         # result is None - this means the concurrent task failed to return a proper result
                         self.failed_count += 1
@@ -7559,80 +6997,58 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                 # Exploit: try to use existing successful template
                 successful_templates = self._get_successful_templates()
                 if successful_templates:
-                    # Check if we're in exploitation phase - use weighted selection
-                    if self.exploitation_phase and self.top_templates:
-                        # Use exploitation phase logic with weighted selection
-                        exploitation_data = self.get_exploitation_template()
-                        if exploitation_data:
-                            # Create template dict for exploitation
-                            best_template = {
-                                'template': exploitation_data['template'],
-                                'region': exploitation_data['target_region'],
-                                'sharpe': exploitation_data['original_sharpe'],
-                                'margin': exploitation_data['original_margin']
-                            }
-                            logger.info(f"🎯 EXPLOITATION RESTART: Using weighted selection with Sharpe={best_template.get('sharpe', 0):.3f}")
-                        else:
-                            # Fallback to best template if exploitation fails
-                            best_template = max(successful_templates, key=lambda x: x.get('sharpe', 0))
-                            logger.info(f"🎯 EXPLOIT RESTART: Fallback to best template with Sharpe={best_template.get('sharpe', 0):.3f}")
-                    else:
-                        # Filter for elite templates that meet high performance criteria
-                        elite_templates = []
-                        for template in successful_templates:
-                            sharpe = template.get('sharpe', 0)
-                            fitness = template.get('fitness', 0)
-                            margin = template.get('margin', 0)
-                            
-                            # Only consider templates that meet the high bar
-                            if (sharpe > 1.25 and fitness > 1.0 and margin > 0.05):
-                                elite_templates.append(template)
+                    # Filter for elite templates that meet high performance criteria
+                    elite_templates = []
+                    for template in successful_templates:
+                        sharpe = template.get('sharpe', 0)
+                        fitness = template.get('fitness', 0)
+                        margin = template.get('margin', 0)
                         
-                        if elite_templates:
-                            logger.info(f"🎯 EXPLOIT RESTART: {len(elite_templates)}/{len(successful_templates)} templates meet elite criteria")
-                            
-                            # Use weighted selection among elite templates
-                            performance_weights = []
-                            for template in elite_templates:
-                                # Use Sharpe ratio as the weight (higher Sharpe = higher weight)
-                                weight = max(template.get('sharpe', 0), 0.1)  # Minimum weight of 0.1
-                                performance_weights.append(weight)
-                            
-                            # Weighted random selection
-                            total_weight = sum(performance_weights)
-                            probabilities = [w / total_weight for w in performance_weights]
-                            selected_idx = random.choices(range(len(elite_templates)), weights=probabilities)[0]
-                            best_template = elite_templates[selected_idx]
-                            
-                            logger.info(f"🎯 EXPLOIT RESTART: Using elite template with Sharpe={best_template.get('sharpe', 0):.3f}, Fitness={best_template.get('fitness', 0):.3f}, Margin={best_template.get('margin', 0):.3f} (weight={probabilities[selected_idx]:.3f})")
-                        else:
-                            # No elite templates available, fallback to EXPLORE mode
-                            logger.warning(f"🎯 EXPLOIT RESTART: No elite templates found, falling back to EXPLORE mode")
-                            logger.info(f"📊 Available templates: {len(successful_templates)}")
-                            for i, template in enumerate(successful_templates[:3]):  # Show first 3 for debugging
-                                logger.info(f"   Template {i+1}: Sharpe={template.get('sharpe', 0):.3f}, Fitness={template.get('fitness', 0):.3f}, Margin={template.get('margin', 0):.3f}")
-                            
-                            # Fallback to explore mode instead of using mediocre templates
-                            logger.info(f"🔄 FALLBACK: Switching to EXPLORE mode due to no elite templates")
-                            future = self.executor.submit(self._explore_and_simulate_concurrent)
-                            future_id = f"explore_restart_{int(time.time() * 1000)}"
-                            self.active_futures[future_id] = future
-                            self.future_start_times[future_id] = time.time()
-                            logger.info(f"🚀 Started CONCURRENT EXPLORE RESTART task: {future_id}")
-                            logger.info(f"🎯 NEW FUTURE: Will explore new templates in region {random.choice(self.regions)}")
-                            logger.info(f"⏰ NEW FUTURE: Started at {time.strftime('%H:%M:%S')} - will timeout after {self.future_timeout}s")
-                            logger.info(f"🔄 RESTART: Future {future_id} submitted to executor")
-                            return
+                        # Only consider templates that meet the high bar (5 bps = 0.0005)
+                        if (sharpe > 1.25 and fitness > 1.0 and margin > 0.0005):
+                            elite_templates.append(template)
                     
-                    logger.info(f"🔄 RESTART: Starting exploit task for restart future")
-                    future = self.executor.submit(self._exploit_and_simulate_concurrent, best_template)
-                    future_id = f"exploit_restart_{int(time.time() * 1000)}"
-                    self.active_futures[future_id] = future
-                    self.future_start_times[future_id] = time.time()
-                    logger.info(f"🚀 Started NEW CONCURRENT EXPLOIT task: {future_id}")
-                    logger.info(f"🎯 NEW FUTURE: Will exploit template with Sharpe={best_template.get('sharpe', 0):.3f} in region {best_template.get('region', 'Unknown')}")
-                    logger.info(f"⏰ NEW FUTURE: Started at {time.strftime('%H:%M:%S')} - will timeout after {self.future_timeout}s")
-                    logger.info(f"🔄 RESTART: Future {future_id} submitted to executor")
+                    if elite_templates:
+                        logger.info(f"🎯 EXPLOIT RESTART: {len(elite_templates)}/{len(successful_templates)} templates meet elite criteria")
+                        
+                        # Use weighted selection among elite templates
+                        performance_weights = []
+                        for template in elite_templates:
+                            # Use Sharpe ratio as the weight (higher Sharpe = higher weight)
+                            weight = max(template.get('sharpe', 0), 0.1)  # Minimum weight of 0.1
+                            performance_weights.append(weight)
+                        
+                        # Weighted random selection
+                        total_weight = sum(performance_weights)
+                        probabilities = [w / total_weight for w in performance_weights]
+                        selected_idx = random.choices(range(len(elite_templates)), weights=probabilities)[0]
+                        best_template = elite_templates[selected_idx]
+                        
+                        logger.info(f"🎯 EXPLOIT RESTART: Using elite template with Sharpe={best_template.get('sharpe', 0):.3f}, Fitness={best_template.get('fitness', 0):.3f}, Margin={best_template.get('margin', 0):.3f} (weight={probabilities[selected_idx]:.3f})")
+                        
+                        logger.info(f"🔄 RESTART: Starting exploit task for restart future")
+                        future = self.executor.submit(self._exploit_and_simulate_concurrent, best_template)
+                        future_id = f"exploit_restart_{int(time.time() * 1000)}"
+                        self.active_futures[future_id] = future
+                        self.future_start_times[future_id] = time.time()
+                    else:
+                        # No elite templates available, fallback to EXPLORE mode
+                        logger.warning(f"🎯 EXPLOIT RESTART: No elite templates found, falling back to EXPLORE mode")
+                        logger.info(f"📊 Available templates: {len(successful_templates)}")
+                        for i, template in enumerate(successful_templates[:3]):  # Show first 3 for debugging
+                            logger.info(f"   Template {i+1}: Sharpe={template.get('sharpe', 0):.3f}, Fitness={template.get('fitness', 0):.3f}, Margin={template.get('margin', 0):.3f}")
+                        
+                        # Fallback to explore mode instead of using mediocre templates
+                        logger.info(f"🔄 FALLBACK: Switching to EXPLORE mode due to no elite templates")
+                        future = self.executor.submit(self._explore_and_simulate_concurrent)
+                        future_id = f"explore_restart_{int(time.time() * 1000)}"
+                        self.active_futures[future_id] = future
+                        self.future_start_times[future_id] = time.time()
+                        logger.info(f"🚀 Started CONCURRENT EXPLORE RESTART task: {future_id}")
+                        logger.info(f"🎯 NEW FUTURE: Will explore new templates in region {random.choice(self.active_regions)}")
+                        logger.info(f"⏰ NEW FUTURE: Started at {time.strftime('%H:%M:%S')} - will timeout after {self.future_timeout}s")
+                        logger.info(f"🔄 RESTART: Future {future_id} submitted to executor")
+                        return
                 else:
                     # No successful templates yet, fallback to explore
                     logger.info(f"🎯 EXPLOIT RESTART: No successful templates found, falling back to EXPLORE")
@@ -7659,12 +7075,13 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
         stuck_futures = 0
         restart_futures = 0
         
-        for future_id, future in self.active_futures.items():
+        # Create a copy of the items to avoid "dictionary changed size during iteration" error
+        for future_id, future in list(self.active_futures.items()):
             start_time = self.future_start_times.get(future_id, current_time)
             elapsed_time = current_time - start_time
             
             # Check if this is a restart future
-            is_restart = 'restart' in future_id
+            is_restart = isinstance(future_id, str) and 'restart' in future_id
             
             if elapsed_time < 60:  # Less than 1 minute
                 healthy_futures += 1
@@ -7699,7 +7116,8 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
         current_time = time.time()
         restart_futures = []
         
-        for future_id, future in self.active_futures.items():
+        # Create a copy of the items to avoid "dictionary changed size during iteration" error
+        for future_id, future in list(self.active_futures.items()):
             if 'restart' in future_id:
                 start_time = self.future_start_times.get(future_id, current_time)
                 elapsed_time = current_time - start_time
@@ -7747,7 +7165,8 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
             return
         
         logger.info(f"📊 ALL FUTURES STATUS: {len(self.active_futures)} futures active")
-        for future_id, future in self.active_futures.items():
+        # Create a copy of the items to avoid "dictionary changed size during iteration" error
+        for future_id, future in list(self.active_futures.items()):
             start_time = self.future_start_times.get(future_id, current_time)
             elapsed_time = current_time - start_time
             
@@ -7823,66 +7242,50 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                         future_id = f"explore_{int(time.time() * 1000)}"
                         self.active_futures[future_id] = future
                         self.future_start_times[future_id] = time.time()
+                        self.thread_count += 1
                         logger.info(f"🚀 Started CONCURRENT EXPLORE task: {future_id}")
+                        logger.info(f"🧵 THREAD STARTED: {future_id} - Total threads: {self.thread_count}")
                 
                 elif plan_type == 'exploit':
                     # Exploit: try to use existing successful template
                     logger.info(f"🎯 EXPLOIT mode: Looking for successful templates...")
                     successful_templates = self._get_successful_templates()
                     if successful_templates:
-                        # Check if we're in exploitation phase - use weighted selection
-                        if self.exploitation_phase and self.top_templates:
-                            # Use exploitation phase logic with weighted selection
-                            exploitation_data = self.get_exploitation_template()
-                            if exploitation_data:
-                                # Create template dict for exploitation
-                                best_template = {
-                                    'template': exploitation_data['template'],
-                                    'region': exploitation_data['target_region'],
-                                    'sharpe': exploitation_data['original_sharpe'],
-                                    'margin': exploitation_data['original_margin']
-                                }
-                                logger.info(f"🎯 EXPLOITATION: Using weighted selection with Sharpe={best_template.get('sharpe', 0):.3f}")
-                            else:
-                                # Fallback to best template if exploitation fails
-                                best_template = max(successful_templates, key=lambda x: x.get('sharpe', 0))
-                                logger.info(f"🎯 EXPLOIT: Fallback to best template with Sharpe={best_template.get('sharpe', 0):.3f}")
-                        else:
-                            # Filter for elite templates that meet high performance criteria
-                            elite_templates = []
-                            for template in successful_templates:
-                                sharpe = template.get('sharpe', 0)
-                                fitness = template.get('fitness', 0)
-                                margin = template.get('margin', 0)
-                                
-                                # Only consider templates that meet the high bar
-                                if (sharpe > 1.25 and fitness > 1.0 and margin > 0.05):
-                                    elite_templates.append(template)
+                        # Filter for elite templates that meet high performance criteria
+                        elite_templates = []
+                        for template in successful_templates:
+                            sharpe = template.get('sharpe', 0)
+                            fitness = template.get('fitness', 0)
+                            margin = template.get('margin', 0)
                             
-                            if elite_templates:
-                                logger.info(f"🎯 EXPLOIT: {len(elite_templates)}/{len(successful_templates)} templates meet elite criteria")
-                                
-                                # Use weighted selection among elite templates
-                                performance_weights = []
-                                for template in elite_templates:
-                                    # Use Sharpe ratio as the weight (higher Sharpe = higher weight)
-                                    weight = max(template.get('sharpe', 0), 0.1)  # Minimum weight of 0.1
-                                    performance_weights.append(weight)
-                                
-                                # Weighted random selection
-                                total_weight = sum(performance_weights)
-                                probabilities = [w / total_weight for w in performance_weights]
-                                selected_idx = random.choices(range(len(elite_templates)), weights=probabilities)[0]
-                                best_template = elite_templates[selected_idx]
-                                
-                                logger.info(f"🎯 EXPLOIT: Using elite template with Sharpe={best_template.get('sharpe', 0):.3f}, Fitness={best_template.get('fitness', 0):.3f}, Margin={best_template.get('margin', 0):.3f} (weight={probabilities[selected_idx]:.3f})")
-                                
-                                future = self.executor.submit(self._exploit_and_simulate_concurrent, best_template)
-                                future_id = f"exploit_{int(time.time() * 1000)}"
-                                self.active_futures[future_id] = future
-                                self.future_start_times[future_id] = time.time()
-                                logger.info(f"🚀 Started CONCURRENT EXPLOIT task: {future_id}")
-                            else:
+                            # Only consider templates that meet the high bar (5 bps = 0.0005)
+                            if (sharpe > 1.25 and fitness > 1.0 and margin > 0.0005):
+                                elite_templates.append(template)
+                            
+                        if elite_templates:
+                            logger.info(f"🎯 EXPLOIT: {len(elite_templates)}/{len(successful_templates)} templates meet elite criteria")
+                            
+                            # Use weighted selection among elite templates
+                            performance_weights = []
+                            for template in elite_templates:
+                                # Use Sharpe ratio as the weight (higher Sharpe = higher weight)
+                                weight = max(template.get('sharpe', 0), 0.1)  # Minimum weight of 0.1
+                                performance_weights.append(weight)
+                            
+                            # Weighted random selection
+                            total_weight = sum(performance_weights)
+                            probabilities = [w / total_weight for w in performance_weights]
+                            selected_idx = random.choices(range(len(elite_templates)), weights=probabilities)[0]
+                            best_template = elite_templates[selected_idx]
+                            
+                            logger.info(f"🎯 EXPLOIT: Using elite template with Sharpe={best_template.get('sharpe', 0):.3f}, Fitness={best_template.get('fitness', 0):.3f}, Margin={best_template.get('margin', 0):.3f} (weight={probabilities[selected_idx]:.3f})")
+                            
+                            future = self.executor.submit(self._exploit_and_simulate_concurrent, best_template)
+                            future_id = f"exploit_{int(time.time() * 1000)}"
+                            self.active_futures[future_id] = future
+                            self.future_start_times[future_id] = time.time()
+                            logger.info(f"🚀 Started CONCURRENT EXPLOIT task: {future_id}")
+                        else:
                                 # No elite templates available, fallback to EXPLORE mode
                                 logger.warning(f"🎯 EXPLOIT: No elite templates found, falling back to EXPLORE mode")
                                 logger.info(f"📊 Available templates: {len(successful_templates)}")
@@ -7930,6 +7333,7 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                     settings=SimulationSettings(region=region, universe=self.region_configs[region].universe, delay=delay, neutralization=template.get('neutralization', 'INDUSTRY')),
                     success=False,
                     error_message="No templates generated",
+                    alpha_id="",
                     timestamp=time.time()
                 )
             
@@ -7953,6 +7357,7 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                 settings={},
                 success=False,
                 error_message=f"Explore error: {str(e)}",
+                alpha_id="",
                 timestamp=time.time()
             )
     
@@ -7961,15 +7366,16 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
         try:
             logger.info(f"🎯 CONCURRENT EXPLOIT: Starting exploitation task")
             
-            # During exploitation phase, use different regions even if region is specified
-            if self.exploitation_phase:
-                original_region = best_template['region']
-                available_regions = [r for r in self.regions if r != original_region]
+            # Always use cross-region exploitation for better diversity
+            original_region = best_template['region']
+            available_regions = [r for r in self.active_regions if r != original_region]
+            if available_regions:
                 region = random.choice(available_regions)
-                logger.info(f"🎯 CONCURRENT EXPLOIT: Using different region {region} (original: {original_region})")
+                logger.info(f"🎯 CONCURRENT EXPLOIT: Using cross-region {region} (original: {original_region})")
             else:
-                region = best_template['region']
-                logger.info(f"🎯 CONCURRENT EXPLOIT: Using original region {region}")
+                # Fallback to original region if no other regions available
+                region = original_region
+                logger.info(f"🎯 CONCURRENT EXPLOIT: Using original region {region} (no other regions available)")
             
             logger.info(f"🎯 CONCURRENT EXPLOIT: Selecting delay...")
             delay = self.select_optimal_delay(region)
@@ -8003,9 +7409,10 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                 return TemplateResult(
                     template=best_template.get('template', ''),
                     region=region,
-                    settings=SimulationSettings(region=region, universe=self.region_configs[region].universe, delay=delay, neutralization=template.get('neutralization', 'INDUSTRY')),
+                    settings=SimulationSettings(region=region, universe=self.region_configs[region].universe, delay=delay, neutralization=best_template.get('neutralization', 'INDUSTRY')),
                     success=False,
                     error_message="No variations generated",
+                    alpha_id="",
                     timestamp=time.time()
                 )
             
@@ -8034,6 +7441,7 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                 settings={},
                 success=False,
                 error_message=f"Exploit error: {str(e)}",
+                alpha_id="",
                 timestamp=time.time()
             )
     
@@ -8053,8 +7461,8 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                 'power', 'abs', 'sign', 'sqrt', 'log', 'exp', 'max', 'min', 'sum', 'mean', 'std', 'std_dev',
                 'corr', 'regression', 'delta', 'ratio', 'product', 'scale', 'zscore', 'lag', 'lead',
                 'group_neutralize', 'group_neutralize', 'group_zscore', 'group_rank', 'group_max', 'group_min',
-                'group_sum', 'group_mean', 'group_std', 'group_scale', 'group_backfill', 'group_forward_fill',
-                'vec_avg', 'vec_sum', 'vec_max', 'vec_min', 'vec_std', 'vec_rank', 'vec_scale',
+                'group_zscore', 'group_scale', 'group_max', 'group_min', 'group_rank', 'group_neutralize', 'group_mean', 'group_backfill', 'group_cartesian_product',
+                'vec_avg', 'vec_sum', 'vec_max', 'vec_min',
                 'if_else', 'greater', 'less', 'greater_equal', 'less_equal', 'equal', 'not_equal',
                 'and', 'or', 'not', 'is_nan', 'is_finite', 'is_infinite', 'fill_na', 'forward_fill',
                 'backward_fill', 'clip', 'clip_lower', 'clip_upper', 'signed_power', 'inverse', 'inverse_sqrt',
@@ -8156,6 +7564,7 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                     settings=SimulationSettings(region=region, universe=self.region_configs[region].universe, delay=delay, neutralization=template.get('neutralization', 'INDUSTRY')),
                     success=False,
                     error_message=error_message,
+                    alpha_id="",
                     timestamp=time.time()
                 )
             
@@ -8173,6 +7582,7 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                     settings=SimulationSettings(region=region, universe=self.region_configs[region].universe, delay=delay, neutralization=template.get('neutralization', 'INDUSTRY')),
                     success=False,
                     error_message=error_message,
+                    alpha_id="",
                     timestamp=time.time()
                 )
             
@@ -8194,6 +7604,7 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                 settings=SimulationSettings(region=region, universe=self.region_configs[region].universe, delay=delay, neutralization=template.get('neutralization', 'INDUSTRY')),
                 success=False,
                 error_message=error_message,
+                alpha_id="",
                 timestamp=time.time()
             )
     
@@ -8230,6 +7641,7 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                                 settings=SimulationSettings(region=region, universe=self.region_configs[region].universe, delay=delay, neutralization=template.get('neutralization', 'INDUSTRY')),
                                 success=False,
                                 error_message="No alphaId in simulation response",
+                                alpha_id="",
                                 timestamp=time.time()
                             )
                         
@@ -8245,6 +7657,7 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                                 settings=SimulationSettings(region=region, universe=self.region_configs[region].universe, delay=delay, neutralization=template.get('neutralization', 'INDUSTRY')),
                                 success=False,
                                 error_message=f"Failed to fetch alpha: {alpha_response.status_code}",
+                                alpha_id="",
                                 timestamp=time.time()
                             )
                         
@@ -8289,6 +7702,35 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                         if is_truly_successful:
                             self.track_operator_usage(template['template'])
                         
+                        # Perform post-simulation analysis immediately after getting alphaId
+                        if is_truly_successful:
+                            try:
+                                logger.info(f"🔍 POST-SIMULATION ANALYSIS: Starting analysis for {template['template'][:50]}...")
+                                # Create a temporary result object for the analysis
+                                temp_result = TemplateResult(
+                                    template=template['template'],
+                                    region=region,
+                                    settings=SimulationSettings(region=region, universe=self.region_configs[region].universe, delay=delay, neutralization=template.get('neutralization', 'INDUSTRY')),
+                                    sharpe=sharpe,
+                                    fitness=fitness if fitness is not None else 0,
+                                    turnover=turnover,
+                                    returns=returns,
+                                    drawdown=drawdown,
+                                    margin=margin,
+                                    longCount=longCount,
+                                    shortCount=shortCount,
+                                    success=is_truly_successful,
+                                    alpha_id=alpha_id,
+                                    timestamp=time.time()
+                                )
+                                self._perform_post_simulation_analysis(temp_result)
+                                logger.info(f"✅ POST-SIMULATION ANALYSIS: Completed successfully")
+                            except Exception as e:
+                                logger.error(f"❌ POST-SIMULATION ANALYSIS ERROR: {e}")
+                                import traceback
+                                logger.error(f"❌ POST-SIMULATION ANALYSIS TRACEBACK: {traceback.format_exc()}")
+                                # Continue execution even if post-simulation analysis fails
+                        
                         return TemplateResult(
                             template=template['template'],
                             region=region,
@@ -8302,6 +7744,7 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
                             longCount=longCount,
                             shortCount=shortCount,
                             success=is_truly_successful,
+                            alpha_id=alpha_id,
                             timestamp=time.time()
                         )
                     
@@ -8378,6 +7821,7 @@ Return JSON: {{"templates": ["ts_rank(field, 20)"]}}"""
             settings=SimulationSettings(region=region, universe=self.region_configs[region].universe, delay=delay, neutralization=template.get('neutralization', 'INDUSTRY')),
             success=False,
             error_message=error_message,
+            alpha_id="",
             timestamp=time.time()
         )
     
