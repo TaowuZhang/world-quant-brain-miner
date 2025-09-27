@@ -29,3 +29,5 @@ data_fields_cache_*.json
 
 credentials.json
 credential.json
+
+submitted_alpha.json
