@@ -11,7 +11,8 @@ import logging
 from queue import Queue
 from threading import Thread
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import random
+import secrets
+import subprocess
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -66,16 +67,27 @@ class AlphaGenerator:
         self.vram_cleanup_interval = 10  # Cleanup every 10 operations
         self.operation_count = 0
         
-        # Model downgrade tracking
-        self.initial_model = getattr(self, 'model_name', 'deepseek-r1:8b')
+        # OpenRouter API configuration
+        self.openrouter_api_key = "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"
+        self.openrouter_url = "https://openrouter.ai/api/v1/chat/completions"
+        
+        # Model downgrade tracking - Using both local Ollama and OpenRouter models
+        self.initial_model = getattr(self, 'model_name', 'qwen3:4b')
         self.error_count = 0
         self.max_errors_before_downgrade = 3
+        
+        # Model fleet with both OpenRouter (cloud) and Ollama (local) models
+        # Ordered by preference: OpenRouter first (more reliable), then local (backup)
         self.model_fleet = [
-            'deepseek-r1:8b',   # Primary model
-            'deepseek-r1:7b',   # First fallback
-            'deepseek-r1:1.5b', # Second fallback
-            'llama3:3b',        # Third fallback
-            'phi3:mini'         # Emergency fallback
+            # OpenRouter models (cloud, more reliable and consistent)
+            {'name': 'qwen/qwen3-4b:free', 'type': 'openrouter', 'size': 'cloud'},
+            {'name': 'google/gemma-3n-e4b-it:free', 'type': 'openrouter', 'size': 'cloud'},
+            {'name': 'meta-llama/llama-3.3-8b-instruct:free', 'type': 'openrouter', 'size': 'cloud'},
+            {'name': 'openai/gpt-oss-20b:free', 'type': 'openrouter', 'size': 'cloud'},
+            # Local Ollama models (backup, no API costs but requires local setup)
+            {'name': 'qwen3:4b', 'type': 'ollama', 'size': '2.5GB'},
+            {'name': 'gemma3:4b', 'type': 'ollama', 'size': '3.3GB'},
+            {'name': 'deepseek-r1:8b', 'type': 'ollama', 'size': '5.2GB'}
         ]
         self.current_model_index = 0
         
@@ -98,15 +110,57 @@ class AlphaGenerator:
     
     def cleanup_vram(self):
         """Perform VRAM cleanup by forcing garbage collection and waiting."""
-        try:
-            import gc
-            gc.collect()
-            logging.info("Performed VRAM cleanup")
-            # Add a small delay to allow GPU memory to be freed
-            time.sleep(2)
-        except Exception as e:
-            logging.warning(f"VRAM cleanup failed: {e}")
+        import gc
+        gc.collect()
+        time.sleep(2)  # Give system time to free memory
+        logging.info("VRAM cleanup completed")
+    
+    def _call_openrouter_api(self, prompt: str, model_name: str) -> str:
+        """Call OpenRouter API with the given prompt and model."""
+        headers = {
+            "Authorization": f"Bearer {self.openrouter_api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/worldquant-brain-miner",  # Optional
+            "X-Title": "WorldQuant Brain Alpha Miner"  # Optional
+        }
         
+        data = {
+            "model": model_name,
+            "messages": [
+                {
+                    "role": "user", 
+                    "content": prompt
+                }
+            ],
+            "temperature": 0.3,
+            "max_tokens": 1000,
+            "top_p": 0.9
+        }
+        
+        try:
+            response = requests.post(
+                self.openrouter_url,
+                headers=headers,
+                json=data,
+                timeout=60
+            )
+            
+            if response.status_code != 200:
+                raise Exception(f"OpenRouter API request failed: {response.status_code} - {response.text}")
+            
+            response_data = response.json()
+            
+            if 'choices' not in response_data or len(response_data['choices']) == 0:
+                raise Exception(f"Unexpected OpenRouter API response format: {response_data}")
+            
+            content = response_data['choices'][0]['message']['content']
+            return content
+            
+        except requests.exceptions.Timeout:
+            raise Exception("OpenRouter API request timed out (60s)")
+        except requests.exceptions.ConnectionError as e:
+            raise Exception(f"OpenRouter API connection error: {str(e)}")
+    
     def get_data_fields(self) -> List[Dict]:
         """Fetch available data fields from WorldQuant Brain across multiple datasets with random sampling."""
         datasets = ['fundamental6', 'fundamental2', 'analyst4', 'model16', 'model51', 'news12']
@@ -137,9 +191,9 @@ class AlphaGenerator:
                     print(f"Total fields in {dataset}: {total_fields}")
                     
                     if total_fields > 0:
-                        # Generate random offset
+                        # Generate cryptographically secure random offset
                         max_offset = max(0, total_fields - base_params['limit'])
-                        random_offset = random.randint(0, max_offset)
+                        random_offset = secrets.randbelow(max_offset + 1) if max_offset > 0 else 0
                         
                         # Fetch random subset
                         params['offset'] = random_offset
@@ -187,28 +241,101 @@ class AlphaGenerator:
             raise Exception(f"Unexpected operators response format. Response: {data}")
 
     def clean_alpha_ideas(self, ideas: List[str]) -> List[str]:
-        """Clean and validate alpha ideas, keeping only valid expressions."""
+        """Clean and validate alpha ideas, keeping only valid expressions based on operators_config_with_tags.json."""
         cleaned_ideas = []
         
-        for idea in ideas:
-            # Skip if idea is just a number or single word
-            if re.match(r'^\d+\.?$|^[a-zA-Z]+$', idea):
-                continue
-            
-            # Skip if idea is a description (contains common English words)
-            common_words = ['it', 'the', 'is', 'are', 'captures', 'provides', 'measures']
-            if any(word in idea.lower() for word in common_words):
-                continue
-            
-            # Verify idea contains valid operators/functions
-            valid_functions = ['ts_mean', 'divide', 'subtract', 'add', 'multiply', 'zscore', 
-                              'ts_rank', 'ts_std_dev', 'rank', 'log', 'sqrt']
-            if not any(func in idea for func in valid_functions):
-                continue
-            
-            cleaned_ideas.append(idea)  # Just append the expression string
+        # Load valid operators from configuration
+        valid_operators = self._load_valid_operators_from_config()
         
+        for idea in ideas:
+            idea = idea.strip()
+            if not idea:
+                continue
+                
+            # Skip if idea is just a number or single word (but allow function names)
+            if re.match(r'^\d+\.?$', idea):
+                logging.debug(f"Filtering out numeric value: {idea}")
+                continue
+            
+            # Skip if idea is clearly a description (contains multiple common English words)
+            common_words = ['it', 'the', 'is', 'are', 'captures', 'provides', 'measures', 'this', 'that', 'will', 'can', 'should', 'would', 'could', 'when', 'where', 'how', 'why', 'what', 'which']
+            word_count = sum(1 for word in common_words if word in idea.lower())
+            if word_count >= 3:  # Increased threshold to be less strict
+                logging.debug(f"Filtering out descriptive text: {idea}")
+                continue
+            
+            # Check if idea contains parentheses (likely a function call)
+            has_function_structure = '(' in idea and ')' in idea
+            
+            # Check if idea contains valid operators from config
+            has_valid_operator = any(op in idea.lower() for op in valid_operators)
+            
+            # Check for common data field patterns
+            data_field_patterns = ['close', 'open', 'high', 'low', 'volume', 'returns', 'vwap', 'adv', 'market_cap', 'book_value']
+            has_data_field = any(field in idea.lower() for field in data_field_patterns)
+            
+            # Accept if it has function structure OR valid operators OR data fields
+            if has_function_structure or has_valid_operator or has_data_field:
+                logging.info(f"Keeping alpha idea: {idea}")
+                cleaned_ideas.append(idea)
+            else:
+                logging.debug(f"Filtering out alpha idea (no valid operators/structure): {idea}")
+        
+        logging.info(f"Cleaned {len(ideas)} ideas down to {len(cleaned_ideas)} valid expressions")
         return cleaned_ideas
+    
+    def _load_valid_operators_from_config(self) -> List[str]:
+        """Load valid operators from operators_config_with_tags.json configuration file."""
+        try:
+            config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'operators_config_with_tags.json')
+            
+            if not os.path.exists(config_path):
+                logging.warning(f"Configuration file not found at {config_path}, using fallback operators")
+                return self._get_fallback_operators()
+            
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            
+            valid_operators = []
+            
+            # Extract operators from all categories
+            if 'operator_categories' in config:
+                for category_name, category_data in config['operator_categories'].items():
+                    if 'operators' in category_data:
+                        for operator_name in category_data['operators'].keys():
+                            valid_operators.append(operator_name)
+            
+            # Also check for operator_sets if they exist
+            if 'operator_sets' in config:
+                for set_name, set_data in config['operator_sets'].items():
+                    if 'group_ops' in set_data:
+                        valid_operators.extend(set_data['group_ops'])
+                    if 'ts_ops' in set_data:
+                        valid_operators.extend(set_data['ts_ops'])
+            
+            logging.info(f"Loaded {len(valid_operators)} valid operators from configuration")
+            return valid_operators
+            
+        except Exception as e:
+            logging.error(f"Failed to load operators from config: {e}")
+            return self._get_fallback_operators()
+    
+    def _get_fallback_operators(self) -> List[str]:
+        """Fallback list of operators if config file is not available."""
+        return [
+            # Arithmetic operators
+            'abs', 'add', 'divide', 'inverse', 'log', 'max', 'min', 'multiply', 'power', 'reverse', 'sign', 'signed_power', 'sqrt', 'subtract',
+            # Logical operators  
+            'and', 'if_else', 'or', 'not',
+            # Comparison operators
+            '<', '<=', '==', '>', '>=', '!=',
+            # Time series operators
+            'ts_mean', 'ts_rank', 'ts_std_dev', 'ts_sum', 'ts_max', 'ts_min', 'ts_delta', 'ts_delay', 'ts_corr', 'ts_cov',
+            # Group operators
+            'group_rank', 'group_mean', 'group_std_dev', 'group_sum', 'group_max', 'group_min', 'group_count', 'group_neutralize',
+            # Statistical operators
+            'correlation', 'covariance', 'decay_linear', 'decay_exp', 'zscore', 'rank', 'winsorize'
+        ]
 
     def generate_alpha_ideas_with_ollama(self, data_fields: List[Dict], operators: List[Dict]) -> List[str]:
         """Generate alpha ideas using Ollama with FinGPT model."""
@@ -232,11 +359,21 @@ class AlphaGenerator:
                 self.results = []
                 delattr(self, '_hit_token_limit')
 
-            # Randomly sample ~60% of operators from each category
+            # Cryptographically secure sampling of ~60% of operators from each category
             sampled_operators = {}
             for category, ops in operator_by_category.items():
                 sample_size = max(1, int(len(ops) * 0.5))  # At least 1 operator per category
-                sampled_operators[category] = random.sample(ops, sample_size)
+                # Use secrets for cryptographically secure sampling
+                if len(ops) <= sample_size:
+                    sampled_operators[category] = ops
+                else:
+                    sampled_ops = []
+                    available_ops = ops.copy()
+                    for _ in range(sample_size):
+                        if available_ops:
+                            idx = secrets.randbelow(len(available_ops))
+                            sampled_ops.append(available_ops.pop(idx))
+                    sampled_operators[category] = sampled_ops
 
             print("Preparing prompt for FinGPT...")
             # Format operators with their types, definitions, and descriptions
@@ -293,63 +430,94 @@ market_ret = ts_product(1+group_mean(returns,1,market),250)-1;rfr = vec_avg(fnd6
 
             # Prepare Ollama API request
             model_name = getattr(self, 'model_name', self.model_fleet[self.current_model_index])
-            ollama_data = {
-                'model': model_name,
-                'prompt': prompt,
-                'stream': False,
-                'temperature': 0.3,
-                'top_p': 0.9,
-                'num_predict': 1000  # Use num_predict instead of max_tokens for Ollama
-            }
-
-            print("Sending request to Ollama API...")
+            # Prepare API request based on current model type
+            current_model = self.model_fleet[self.current_model_index]
+            model_name = current_model['name']
+            model_type = current_model['type']
+            
+            print(f"Using model: {model_name} ({model_type})")
+            
+            # Simplified model switching - no memory checks needed
+            
+            print(f"Sending request to {model_type.upper()} API...")
+            
             try:
-                response = requests.post(
-                    f'{self.ollama_url}/api/generate',
-                    json=ollama_data,
-                    timeout=360  # 6 minutes timeout
-                )
+                if model_type == 'ollama':
+                    # Ollama API call
+                    ollama_data = {
+                        'model': model_name,
+                        'prompt': prompt,
+                        'stream': False,
+                        'temperature': 0.3,
+                        'top_p': 0.9,
+                        'num_predict': 1000,
+                        'keep_alive': 0  # Immediately unload model to save memory
+                    }
+                    
+                    response = requests.post(
+                        f'{self.ollama_url}/api/generate',
+                        json=ollama_data,
+                        timeout=60
+                    )
 
-                print(f"Ollama API response status: {response.status_code}")
-                print(f"Ollama API response: {response.text[:500]}...")  # Print first 500 chars
+                    print(f"Ollama API response status: {response.status_code}")
+                    logging.info(f"Ollama API response status: {response.status_code}")
+                    
+                    # Log first 1000 characters of response for debugging
+                    response_preview = response.text[:1000] if response.text else "Empty response"
+                    print(f"Ollama API response: {response_preview}...")
+                    logging.info(f"Ollama API response preview: {response_preview}")
 
-                if response.status_code == 500:
-                    logging.error(f"Ollama API returned 500 error: {response.text}")
-                    # Trigger model downgrade for 500 errors
-                    self._handle_ollama_error("500_error")
-                    return []
-                elif response.status_code != 200:
-                    raise Exception(f"Ollama API request failed: {response.text}")
+                    if response.status_code == 500:
+                        logging.error(f"Ollama API returned 500 error: {response.text}")
+                        self._handle_ollama_error("500_error")
+                        return []
+                    elif response.status_code != 200:
+                        raise Exception(f"Ollama API request failed: {response.text}")
+
+                    response_data = response.json()
+                    if 'response' not in response_data:
+                        raise Exception(f"Unexpected Ollama API response format: {response_data}")
+                    
+                    content = response_data['response']
+                    logging.info(f"Ollama API returned {len(content)} characters of content")
+                    
+                else:
+                    # OpenRouter API call
+                    logging.info(f"Making OpenRouter API call with model: {model_name}")
+                    content = self._call_openrouter_api(prompt, model_name)
+                    print(f"OpenRouter API response: {content[:500]}...")
+                    logging.info(f"OpenRouter API returned {len(content)} characters of content")
+                    logging.debug(f"OpenRouter API full response: {content}")
                     
             except requests.exceptions.Timeout:
-                logging.error("Ollama API request timed out (360s)")
-                # Trigger model downgrade for timeouts
+                logging.error(f"{model_type.upper()} API request timed out (60s)")
                 self._handle_ollama_error("timeout")
                 return []
             except requests.exceptions.ConnectionError as e:
                 if "Read timed out" in str(e):
-                    logging.error("Ollama API read timeout")
-                    # Trigger model downgrade for read timeouts
+                    logging.error(f"{model_type.upper()} API read timeout")
                     self._handle_ollama_error("read_timeout")
                     return []
                 else:
                     raise e
+            except Exception as e:
+                logging.error(f"{model_type.upper()} API error: {str(e)}")
+                self._handle_ollama_error("api_error")
+                return []
 
-            response_data = response.json()
-            print(f"Ollama API response JSON keys: {list(response_data.keys())}")
-
-            if 'response' not in response_data:
-                raise Exception(f"Unexpected Ollama API response format: {response_data}")
-
-            print("Processing Ollama API response...")
-            content = response_data['response']
+            print(f"Processing {model_type.upper()} API response...")
+            # content variable is now set by either Ollama or OpenRouter API call
             
             # Extract pure alpha expressions by:
             # 1. Remove markdown backticks
             # 2. Remove numbering (e.g., "1. ", "2. ")
             # 3. Skip comments
             alpha_ideas = []
-            for line in content.split('\n'):
+            raw_lines = content.split('\n')
+            logging.info(f"Processing {len(raw_lines)} lines from {model_type.upper()} API response")
+            
+            for i, line in enumerate(raw_lines):
                 line = line.strip()
                 if not line or line.startswith('#') or line.startswith('*'):
                     continue
@@ -359,14 +527,15 @@ market_ret = ts_product(1+group_mean(returns,1,market),250)-1;rfr = vec_avg(fnd6
                     line = line.split('. ', 1)[1]
                 if line and not line.startswith('Comment:'):
                     alpha_ideas.append(line)
+                    logging.debug(f"Extracted line {i+1}: {line}")
             
-            print(f"Generated {len(alpha_ideas)} alpha ideas")
+            logging.info(f"Generated {len(alpha_ideas)} raw alpha ideas from API response")
             for i, alpha in enumerate(alpha_ideas, 1):
-                print(f"Alpha {i}: {alpha}")
+                logging.info(f"Raw Alpha {i}: {alpha}")
             
             # Clean and validate ideas
             cleaned_ideas = self.clean_alpha_ideas(alpha_ideas)
-            logging.info(f"Found {len(cleaned_ideas)} valid alpha expressions")
+            logging.info(f"After cleaning: {len(cleaned_ideas)} valid alpha expressions")
             
             return cleaned_ideas
 
@@ -385,22 +554,34 @@ market_ret = ts_product(1+group_mean(returns,1,market),250)-1;rfr = vec_avg(fnd6
             self._downgrade_model()
             self.error_count = 0  # Reset error count after downgrade
     
+
+
     def _downgrade_model(self):
-        """Downgrade to the next smaller model in the fleet."""
+        """Downgrade to the next model in the fleet (OpenRouter -> Ollama or within same type)."""
         if self.current_model_index >= len(self.model_fleet) - 1:
-            logging.error("Already using the smallest model in the fleet!")
+            logging.error("Already using the last model in the fleet!")
             # Reset to initial model if we've exhausted all options
             self.current_model_index = 0
-            self.model_name = self.initial_model
-            logging.info(f"Reset to initial model: {self.initial_model}")
+            current_model = self.model_fleet[0]
+            self.model_name = current_model['name']
+            logging.info(f"Reset to initial model: {current_model['name']} ({current_model['type']})")
             return
         
         old_model = self.model_fleet[self.current_model_index]
         self.current_model_index += 1
         new_model = self.model_fleet[self.current_model_index]
         
-        logging.warning(f"Downgrading model: {old_model} -> {new_model}")
-        self.model_name = new_model
+        logging.warning(f"Downgrading model: {old_model['name']} ({old_model['type']}) -> {new_model['name']} ({new_model['type']})")
+        self.model_name = new_model['name']
+        
+        # Reset error count after successful downgrade
+        self.error_count = 0
+        
+        # Log the transition based on model type
+        if new_model['type'] == 'openrouter':
+            logging.info(f"Switching to OpenRouter cloud model: {new_model['name']}")
+        elif new_model['type'] == 'ollama':
+            logging.info(f"Switching to local Ollama model: {new_model['name']}")
         
         # Update the model in the orchestrator if it exists
         try:
@@ -637,7 +818,7 @@ market_ret = ts_product(1+group_mean(returns,1,market),250)-1;rfr = vec_avg(fnd6
             return {
                 "status": "success", 
                 "result": {
-                    "id": f"{time.time()}_{random.random()}",
+                    "id": f"{time.time()}_{secrets.token_hex(8)}",
                     "progress_url": sim_progress_url
                 }
             }
