@@ -355,7 +355,7 @@ class AlphaDashboard:
         """Trigger manual alpha expression mining."""
         try:
             result = subprocess.run([
-                "python", "alpha_orchestrator.py", 
+                "python3", "alpha_orchestrator.py", 
                 "--mode", "miner",
                 "--credentials", "./credential.txt"
             ], capture_output=True, text=True, timeout=300)
@@ -372,7 +372,7 @@ class AlphaDashboard:
         """Trigger manual alpha submission."""
         try:
             result = subprocess.run([
-                "python", "alpha_orchestrator.py", 
+                "python3", "alpha_orchestrator.py", 
                 "--mode", "submitter",
                 "--credentials", "./credential.txt",
                 "--batch-size", "3"
@@ -390,7 +390,7 @@ class AlphaDashboard:
         """Trigger manual alpha generation."""
         try:
             result = subprocess.run([
-                "python", "alpha_orchestrator.py", 
+                "python3", "alpha_orchestrator.py", 
                 "--mode", "generator",
                 "--credentials", "./credential.txt",
                 "--batch-size", "1"

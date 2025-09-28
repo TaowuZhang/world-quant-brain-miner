@@ -52,7 +52,7 @@ services:
               count: all
               capabilities: [gpu]
     restart: unless-stopped
-    command: ["python", "machine_miner.py", "--credentials", "/app/credential.txt", "--region", "USA", "--universe", "TOP3000"]
+    command: ["python3", "machine_miner.py", "--credentials", "/app/credential.txt", "--region", "USA", "--universe", "TOP3000"]
     depends_on:
       - ollama
     networks:
@@ -79,7 +79,7 @@ services:
               count: all
               capabilities: [gpu]
     restart: unless-stopped
-    command: ["python", "alpha_generator_ollama.py", "--ollama-url", "http://ollama:11434", "--mode", "continuous", "--mining-interval", "6", "--batch-size", "3", "--max-concurrent", "3"]
+    command: ["python3", "alpha_generator_ollama.py", "--ollama-url", "http://ollama:11434", "--mode", "continuous", "--mining-interval", "6", "--batch-size", "3", "--max-concurrent", "3"]
     depends_on:
       - ollama
     networks:
@@ -106,7 +106,7 @@ services:
               count: all
               capabilities: [gpu]
     restart: unless-stopped
-    command: ["python", "alpha_expression_miner_continuous.py", "--ollama-url", "http://ollama:11434", "--mining-interval", "6"]
+    command: ["python3", "alpha_expression_miner_continuous.py", "--ollama-url", "http://ollama:11434", "--mining-interval", "6"]
     depends_on:
       - ollama
     networks:

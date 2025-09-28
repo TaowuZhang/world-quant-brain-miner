@@ -36,7 +36,7 @@ trap cleanup SIGINT SIGTERM EXIT
 
 # Start the model fleet manager in background
 echo "Starting Model Fleet Manager..."
-python model_fleet_manager.py --monitor &
+python3 model_fleet_manager.py --monitor &
 MODEL_FLEET_PID=$!
 
 # Wait a moment for the fleet manager to initialize
@@ -44,7 +44,7 @@ sleep 5
 
 # Check fleet status
 echo "Checking Model Fleet Status..."
-python model_fleet_manager.py --status
+python3 model_fleet_manager.py --status
 
 # Start the main Docker services
 echo "Starting Docker services..."
@@ -61,7 +61,7 @@ docker-compose -f docker-compose.gpu.yml ps
 # Show current model being used
 echo ""
 echo "Current Model Configuration:"
-python model_fleet_manager.py --status
+python3 model_fleet_manager.py --status
 
 echo ""
 echo "Alpha Mining System is running with Model Fleet Management!"
@@ -82,7 +82,7 @@ while kill -0 $MODEL_FLEET_PID 2>/dev/null; do
     # Check if fleet manager is still running
     if ! kill -0 $MODEL_FLEET_PID 2>/dev/null; then
         echo "Model Fleet Manager stopped unexpectedly. Restarting..."
-        python model_fleet_manager.py --monitor &
+        python3 model_fleet_manager.py --monitor &
         MODEL_FLEET_PID=$!
     fi
 done

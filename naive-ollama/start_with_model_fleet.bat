@@ -27,14 +27,14 @@ if not exist logs mkdir logs
 
 REM Start the model fleet manager in background
 echo Starting Model Fleet Manager...
-start /B python model_fleet_manager.py --monitor
+start /B python3 model_fleet_manager.py --monitor
 
 REM Wait a moment for the fleet manager to initialize
 timeout /t 5 /nobreak >nul
 
 REM Check fleet status
 echo Checking Model Fleet Status...
-python model_fleet_manager.py --status
+python3 model_fleet_manager.py --status
 
 REM Start the main Docker services
 echo Starting Docker services...
@@ -51,7 +51,7 @@ docker-compose -f docker-compose.gpu.yml ps
 REM Show current model being used
 echo.
 echo Current Model Configuration:
-python model_fleet_manager.py --status
+python3 model_fleet_manager.py --status
 
 echo.
 echo Alpha Mining System is running with Model Fleet Management!

@@ -45,8 +45,8 @@ fi
 
 # Start the alpha submitter in the background (daily submission with hopeful alphas check)
 echo "Starting improved alpha submitter in background (daily submission with 50+ hopeful alphas check)..."
-python improved_alpha_submitter.py --use-hopeful-file --min-hopeful-count 50 --interval-hours 24 --batch-size 3 --log-level INFO &
+python3 improved_alpha_submitter.py --use-hopeful-file --min-hopeful-count 50 --interval-hours 24 --batch-size 3 --log-level INFO &
 
 # Start the main application with Ollama integration (concurrent mode)
 echo "Starting alpha orchestrator with Ollama using $MODEL_NAME in concurrent mode..."
-python alpha_orchestrator.py --ollama-url http://localhost:11434 --ollama-model $MODEL_NAME --mode continuous --mining-interval 6 --batch-size 3 --max-concurrent 3
+python3 alpha_orchestrator.py --ollama-url http://localhost:11434 --ollama-model $MODEL_NAME --mode continuous --mining-interval 6 --batch-size 3 --max-concurrent 3

@@ -41,7 +41,7 @@ if not exist "results" mkdir results
 if not exist "logs" mkdir logs
 
 REM Check if credential file is properly formatted
-python -c "import json; json.load(open('credential.txt'))" >nul 2>&1
+python3 -c "import json; json.load(open('credential.txt'))" >nul 2>&1
 if errorlevel 1 (
     echo ❌ credential.txt is not valid JSON. Please check the format.
     pause

@@ -35,7 +35,7 @@ services:
           memory: 12G
           cpus: '4.0'
     restart: unless-stopped
-    command: ["python", "alpha_orchestrator.py", "--mode", "continuous", "--batch-size", "2", "--max-concurrent", "2"]
+    command: ["python3", "alpha_orchestrator.py", "--mode", "continuous", "--batch-size", "2", "--max-concurrent", "2"]
     networks:
       - naive-ollma-network
 
@@ -79,7 +79,7 @@ services:
           memory: 8G
           cpus: '2.0'
     restart: unless-stopped
-    command: ["python", "machine_miner.py", "--credentials", "/app/credential.txt", "--region", "USA", "--universe", "TOP3000"]
+    command: ["python3", "machine_miner.py", "--credentials", "/app/credential.txt", "--region", "USA", "--universe", "TOP3000"]
     depends_on:
       - naive-ollma
     networks:
@@ -99,7 +99,7 @@ services:
     environment:
       - FLASK_ENV=production
       - PYTHONUNBUFFERED=1
-    command: ["python", "web_dashboard.py"]
+    command: ["python3", "web_dashboard.py"]
     depends_on:
       - naive-ollma
     restart: unless-stopped

@@ -26,7 +26,7 @@ if not exist logs mkdir logs
 
 REM Start VRAM monitor in background
 echo Starting VRAM monitor...
-start /B python vram_monitor.py --threshold 0.85 --interval 30
+start /B python3 vram_monitor.py --threshold 0.85 --interval 30
 
 REM Wait a moment for VRAM monitor to start
 timeout /t 5 /nobreak >nul
@@ -70,6 +70,6 @@ goto monitor_loop
 echo.
 echo Shutting down alpha mining system...
 docker-compose -f docker-compose.gpu.yml down
-taskkill /f /im python.exe /fi "WINDOWTITLE eq vram_monitor.py" >nul 2>&1
+taskkill /f /im python3.exe /fi "WINDOWTITLE eq vram_monitor.py" >nul 2>&1
 echo Cleanup complete.
 pause

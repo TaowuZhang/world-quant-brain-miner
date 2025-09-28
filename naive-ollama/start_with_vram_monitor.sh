@@ -34,7 +34,7 @@ trap cleanup SIGINT SIGTERM
 
 # Start VRAM monitor in background
 echo "Starting VRAM monitor..."
-python vram_monitor.py --threshold 0.85 --interval 30 &
+python3 vram_monitor.py --threshold 0.85 --interval 30 &
 VRAM_MONITOR_PID=$!
 
 # Wait a moment for VRAM monitor to start
@@ -67,7 +67,7 @@ while true; do
     if ! kill -0 $VRAM_MONITOR_PID 2>/dev/null; then
         echo "Warning: VRAM monitor stopped unexpectedly"
         # Restart VRAM monitor
-        python vram_monitor.py --threshold 0.85 --interval 30 &
+        python3 vram_monitor.py --threshold 0.85 --interval 30 &
         VRAM_MONITOR_PID=$!
     fi
     

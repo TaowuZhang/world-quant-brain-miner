@@ -5,9 +5,9 @@ echo ========================================
 echo.
 
 REM Check if Python is available
-python --version >nul 2>&1
+python3 --version >nul 2>&1
 if %errorlevel% neq 0 (
-    echo ERROR: Python is not installed or not in PATH
+    echo ERROR: Python3 is not installed or not in PATH
     pause
     exit /b 1
 )
@@ -43,6 +43,6 @@ echo Press Ctrl+C to stop the dashboard
 echo.
 
 REM Start the dashboard
-python web_dashboard.py
+python3 web_dashboard.py
 
 pause
